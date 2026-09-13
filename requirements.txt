@@ -1,0 +1,23 @@
+# NXTSight — on-device pipeline dependencies
+# Target runtime: Snapdragon X Elite NPU (Hexagon) via Qualcomm AI Hub / ONNX Runtime QNN EP
+
+# Qualcomm AI Hub: compile, profile, and validate models for on-device NPU execution
+qai-hub
+qai-hub-models
+
+# On-device inference runtime with QNN (Qualcomm Neural Network) execution provider
+onnxruntime-qnn
+
+# Core numerical / data handling
+numpy
+pandas
+
+# Screenshot OCR (feature 1: scam message detection from a screenshot)
+pillow
+pytesseract
+
+# Text classification / lightweight local NLP (scam detection, spend categorization)
+scikit-learn
+
+# Dev tooling
+pytest
