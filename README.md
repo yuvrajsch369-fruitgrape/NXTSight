@@ -41,3 +41,10 @@ python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
+
+**First run on macOS:** EasyOCR downloads its model weights the first time it runs. If you installed Python from python.org and see a `CERTIFICATE_VERIFY_FAILED` error, fix it with:
+
+```bash
+pip install certifi
+export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+```

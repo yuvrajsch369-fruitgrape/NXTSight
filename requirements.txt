@@ -13,8 +13,14 @@ numpy
 pandas
 
 # Screenshot OCR (feature 1: scam message detection from a screenshot)
+# EasyOCR is pure-Python (no system Tesseract binary required) so it runs
+# anywhere out of the box; swap for a Qualcomm AI Hub OCR model once available.
+# numpy/opencv are pinned because easyocr's torch build (2.2.2, the last
+# version with Intel-Mac wheels) needs the numpy 1.x ABI.
 pillow
-pytesseract
+easyocr
+numpy<2
+opencv-python-headless<4.10
 
 # Text classification / lightweight local NLP (scam detection, spend categorization)
 scikit-learn
