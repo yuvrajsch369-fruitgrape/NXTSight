@@ -5,8 +5,15 @@
 qai-hub
 qai-hub-models
 
-# On-device inference runtime with QNN (Qualcomm Neural Network) execution provider
-onnxruntime-qnn
+# On-device inference runtime. onnxruntime-qnn ships ONNX Runtime with the
+# QNN execution provider, which is how a compiled model actually reaches the
+# Snapdragon Hexagon NPU — but it only publishes Windows/Linux-ARM wheels.
+# Everywhere else (this dev Mac included) we install plain onnxruntime, and
+# src/pipeline/runtime.py auto-detects which one is present at startup and
+# falls back to the CPU provider when QNN isn't available.
+onnx<1.20  # newer onnx defaults to an IR version this onnxruntime can't load
+onnxruntime; sys_platform != "win32"
+onnxruntime-qnn; sys_platform == "win32"
 
 # Core numerical / data handling
 numpy

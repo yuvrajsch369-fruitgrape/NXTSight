@@ -18,10 +18,14 @@ Both features are really the same three-step pipeline pointed at different input
 ```
 NXTSight/
 ├── src/
-│   ├── pipeline/            # shared: model loading, NPU inference (QAI Hub), pre/post-processing
+│   ├── pipeline/
+│   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
+│   │   └── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   └── spend_categorizer/   # feature 2: transaction text parsing + spend categorization
 ├── models/                  # exported/compiled model artifacts for on-device NPU inference
+├── scripts/
+│   └── aihub_profile_easyocr.py  # one-off: profile a compiled model on real Snapdragon hardware
 ├── data/samples/            # sample screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests
@@ -32,7 +36,9 @@ NXTSight/
 
 ## Status
 
-Scaffold only — no feature logic implemented yet.
+OCR stage (`extract_text_from_image`) and the NPU/CPU execution-provider
+auto-detect (`runtime.py`) are working. Scam classification and spend
+categorization are not implemented yet.
 
 ## Setup
 
@@ -48,3 +54,49 @@ pip install -r requirements.txt
 pip install certifi
 export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
 ```
+
+## Snapdragon / Qualcomm AI Hub
+
+There are two separate pieces here — a **build-time step** you run once, by hand, to get a Snapdragon-ready model, and a **runtime check** the app makes every time it starts.
+
+### 1. Build-time: compile + profile a model for Snapdragon via AI Hub
+
+This step turns a model into a `.onnx` file specifically compiled for the Snapdragon X Elite, and confirms it actually runs correctly by profiling it on real, physical Snapdragon hardware in Qualcomm's cloud device farm (not a simulator — useful since most of us don't own a Snapdragon PC to test on directly). It needs your own free AI Hub account and API token from [aihub.qualcomm.com](https://aihub.qualcomm.com); nobody else can run this step for you.
+
+```bash
+pip install qai-hub "qai-hub-models[easyocr]"
+qai-hub configure --api_token <YOUR_API_TOKEN>
+
+python -m qai_hub_models.models.easyocr.export \
+    --device "Snapdragon X Elite CRD" \
+    --target-runtime onnx
+```
+
+That one command uploads the model, compiles it for the Snapdragon X Elite, profiles the compiled model on real cloud-hosted Snapdragon hardware, validates its numerical output against the original model, and downloads the resulting `.onnx` file — it prints the exact output path when it finishes. Copy that file into `models/`.
+
+If you want to profile a `.onnx` you already have (say, to re-verify after a change) without repeating the full export, use the included script — it talks to the AI Hub API directly and does just the profiling step:
+
+```bash
+python scripts/aihub_profile_easyocr.py models/easyocr_detector.onnx
+```
+
+This submits a real job to Qualcomm's cloud, waits for it to run on physical Snapdragon hardware, and prints back the actual measured latency/memory numbers — solid evidence for the "Present" part of the challenge that this genuinely runs on Snapdragon, not just in theory.
+
+### 2. Runtime: automatic NPU/CPU detection
+
+`src/pipeline/runtime.py` decides, at startup, how to run a compiled `.onnx` model:
+
+- On a **Snapdragon Windows PC** with `onnxruntime-qnn` installed, ONNX Runtime reports a `QNNExecutionProvider` — `runtime.py` detects it and routes inference to the Hexagon NPU.
+- On **any other machine** (this dev Mac included — Intel Macs have no Qualcomm NPU and no QNN provider at all), it falls back to the plain CPU provider automatically.
+
+No manual flag to flip, and it never crashes for lacking the NPU provider. Every session logs which path is active in plain language, so it's obvious mid-demo which one is running:
+
+```
+[NXTSight] Execution path: CPU (QNN execution provider not available on this machine)
+[NXTSight] ONNX Runtime providers available here: CoreMLExecutionProvider, AzureExecutionProvider, CPUExecutionProvider
+[NXTSight] Session ready on 'models/easyocr_detector.onnx' — active provider: CPUExecutionProvider
+```
+
+On the actual Snapdragon HP PC, once `onnxruntime-qnn` is installed, the same code logs `Execution path: Snapdragon NPU (ONNX Runtime QNN execution provider)` instead — nothing else changes.
+
+`tests/test_runtime.py` proves this end-to-end right now, on this dev machine, using a tiny throwaway ONNX model — no Snapdragon hardware or AI Hub account required to verify the detection logic itself works.
