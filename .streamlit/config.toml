@@ -1,0 +1,7 @@
+# Streamlit pings usage telemetry externally by default — that's exactly
+# the kind of network call NXTSight's offline pitch says never happens.
+# Disabled so the app's own framework doesn't undercut the "no data leaves
+# the machine" claim, and so src/pipeline/network_guard.py is only ever
+# reporting on NXTSight's own inference code, not Streamlit's telemetry.
+[browser]
+gatherUsageStats = false

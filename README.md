@@ -19,6 +19,14 @@ Opens a minimal local web page ([app.py](app.py)) with two tabs — drop in a sc
 
 **The UI itself carries a persistent banner** (not just this README) making clear that manual upload/paste is a demo simplification: the real, intended product reads incoming SMS/notifications automatically in the background — the same way Walnut or Money View already do in India — so nobody ever opens an app or types anything.
 
+**Two more status badges sit right above that banner, on every screen:**
+
+- **Execution path** — reads `runtime.select_execution_providers()` and shows the exact same string that gets logged server-side: `CPU (QNN execution provider not available on this machine)` on a dev machine, or `Snapdragon NPU (ONNX Runtime QNN execution provider)` on the real Snapdragon hardware. No need to explain which path is active out loud — it's on screen.
+
+- **Network: blocked & verified** — this isn't a claim, it's a live self-test. [`src/pipeline/network_guard.py`](src/pipeline/network_guard.py) patches `socket.socket.connect()` at app startup so any connection to anything other than localhost raises immediately, then the app itself attempts a real outbound connection (to `8.8.8.8:53`) and confirms its own code rejected it — *before* rendering the rest of the page. If that check ever fails, the app shows a red error and refuses to render anything else (`st.stop()`) rather than quietly continuing. This is exactly the "turn off wifi and nothing changes" claim made demonstrable: the badge is proof captured at that instant, not something asserted out loud. Verified in [tests/test_network_guard.py](tests/test_network_guard.py): loopback connections still work (Streamlit needs those), a blocked attempt raises `NetworkBlockedError`, and OCR/scam-classification/spend-categorization all still work correctly with the guard active — proving the pipeline doesn't secretly depend on network once its models are on disk.
+
+One honest caveat: this proves the *inference* path is offline. A brand-new machine that has never run NXTSight before would still need network once, on first launch, to let EasyOCR download its model weights (a few hundred MB, cached to `~/.EasyOCR/` afterward) — the guard would loudly block that too if wifi were off on a truly first-ever run. For a presentation, run it once beforehand so the cache exists; after that, the offline guarantee holds for real.
+
 ## How it works
 
 Both features are really the same three-step pipeline pointed at different inputs: **read** (OCR pulls text out of a screenshot, or the raw transaction text is used as-is), **understand** (a small local model — compiled and run on-device through Qualcomm AI Hub's NPU tooling — classifies or categorizes that text), and **explain** (the result is turned into one plain-language line a non-technical person can read, like "this looks like a scam because it asks you to click a link and act immediately" or "your top spend this month was food delivery"). Sharing that pipeline between the scam-check and spend-insight features means one on-device model-serving layer does both jobs, instead of building two separate apps.
@@ -120,12 +128,14 @@ python scripts/aihub_compile_spend_categorizer.py          # compiles + profiles
 ```
 NXTSight/
 ├── app.py                   # live demo UI (streamlit run app.py) — screenshot -> verdict, or transactions -> insight
+├── .streamlit/config.toml   # disables Streamlit's own telemetry (would otherwise call out)
 ├── src/
 │   ├── pipeline/
-│   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
-│   │   ├── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
-│   │   ├── text_guard.py    # shared "is this text analyzable" check (gibberish/non-English/empty)
-│   │   └── engine.py        # NXTSightEngine: the one shared object both tasks call through
+│   │   ├── ocr.py            # extract_text_from_image(): screenshot -> raw text
+│   │   ├── runtime.py        # picks the ONNX Runtime execution provider (NPU vs CPU)
+│   │   ├── text_guard.py     # shared "is this text analyzable" check (gibberish/non-English/empty)
+│   │   ├── engine.py         # NXTSightEngine: the one shared object both tasks call through
+│   │   └── network_guard.py  # blocks + proves-blocked any non-loopback network connection
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx

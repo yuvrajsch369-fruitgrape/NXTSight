@@ -16,7 +16,16 @@ from pathlib import Path
 
 import streamlit as st
 
+# Install the network guard before importing anything that touches a
+# model — if OCR/classification ever tried to reach the network, this
+# makes that attempt fail immediately and loudly instead of silently
+# succeeding over wifi during a demo.
+from src.pipeline import network_guard
+
+network_guard.install()
+
 from src.pipeline.ocr import extract_text_from_image
+from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
 
@@ -35,6 +44,32 @@ st.set_page_config(page_title="NXTSight", layout="centered")
 
 st.title("NXTSight")
 st.caption("On-device scam detection + spend insight — Snapdragon AI Lab Build & Present Challenge")
+
+_, execution_description = select_execution_providers()
+is_on_npu = execution_description.startswith("Snapdragon NPU")
+
+try:
+    network_guard.verify_blocked()
+    network_isolation_ok = True
+except Exception as exc:
+    network_isolation_ok = False
+    network_isolation_error = str(exc)
+
+status_col1, status_col2 = st.columns(2)
+with status_col1:
+    if is_on_npu:
+        st.success(f"**Execution path:** {execution_description}")
+    else:
+        st.info(f"**Execution path:** {execution_description}")
+with status_col2:
+    if network_isolation_ok:
+        st.success(
+            "**Network: blocked & verified** — a real outbound connection attempt was "
+            "just made and rejected by NXTSight's own code, proving inference needs no network."
+        )
+    else:
+        st.error(f"**NETWORK ISOLATION CHECK FAILED:** {network_isolation_error}")
+        st.stop()
 
 st.warning(
     "**Demo simplification.** You're pasting text or uploading a screenshot by hand so you can "
