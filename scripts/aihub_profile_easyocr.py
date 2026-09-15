@@ -34,6 +34,9 @@ def main():
         model=model_path,
         device=device,
         name="NXTSight EasyOCR detector",
+        # This qai_hub_models release targets an older QAIRT version than AI
+        # Hub currently serves; without this override the job is rejected.
+        options="--qairt_version=default",
     )
 
     print(f"[NXTSight/AI Hub] Job submitted: {job.url}")

@@ -20,10 +20,16 @@ dist/
 *.egg-info/
 
 # Model artifacts (large binaries — track via releases or LFS, not plain git)
+models/**/*.onnx
+models/**/*.data
+models/**/*.bin
+models/**/*.pt
+models/**/*.qnn
 models/*.onnx
 models/*.bin
 models/*.pt
 models/*.qnn
+!models/.gitkeep
 
 # Jupyter
 .ipynb_checkpoints/
