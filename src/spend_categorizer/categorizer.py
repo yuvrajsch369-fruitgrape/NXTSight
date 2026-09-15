@@ -1,14 +1,14 @@
-"""Spend-categorization stage of the NXTSight pipeline.
+"""Spend-categorization task, running on NXTSight's shared on-device engine.
 
 categorize_transactions(list_of_texts) -> {"categorized": [...], "insight": str}
 
-Reuses the same local-model pattern as the scam classifier: TF-IDF +
-Logistic Regression trained on labeled examples (train_classifier.py),
-exported to ONNX via skl2onnx, and run through the same QNN-aware
-runtime.py used by both other stages — one on-device model-serving layer
-for scam detection and spend categorization alike. Also reuses the same
-text_guard.unanalyzable_reason() gibberish/non-English/empty-text check
-that the scam classifier uses, rather than reimplementing it.
+Same shared-engine pattern as the scam classifier: this module registers a
+Task with src.pipeline.engine.engine and calls engine.analyze() — it never
+touches onnxruntime or loads a model file itself. Everything below is
+spend-specific interpretation of the engine's raw Prediction: turning a
+category id into a label, pulling amount/direction out with a small regex
+(independent of the ML model), and rolling per-transaction results up into
+one plain-language insight.
 """
 
 import json
@@ -16,37 +16,29 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
-from joblib import load
-
-from src.pipeline.runtime import create_inference_session
-from src.pipeline.text_guard import unanalyzable_reason
+from src.pipeline.engine import Task, engine
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
-MAX_CHARS = 2000  # a transaction SMS is short; this is a generous ceiling
+TASK_NAME = "spend_categorization"
 # With ~8 examples per category spread across 11 classes, softmax probability
 # mass is naturally diffuse (random baseline is ~0.09) — 0.20 is comfortably
 # above chance without demanding near-certainty from a small model.
 MIN_CATEGORY_CONFIDENCE = 0.20
 
+engine.register_task(Task(name=TASK_NAME, artifacts_dir=ARTIFACTS_DIR, max_chars=2000))
+
 AMOUNT_PATTERN = re.compile(r"(?:rs\.?|inr|₹)\s?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
 DEBIT_KEYWORDS = ["debited", "spent", "paid", "withdrawn", "withdrawal", "sent", "invested", "transferred"]
 CREDIT_KEYWORDS = ["credited", "received", "deposited", "refund", "cashback", "bonus"]
 
-_vectorizer = None
-_session = None
 _categories = None
 
 
-def _load_artifacts():
-    global _vectorizer, _session, _categories
-    if _vectorizer is None:
-        _vectorizer = load(ARTIFACTS_DIR / "vectorizer.joblib")
-    if _session is None:
-        _session, _ = create_inference_session(str(ARTIFACTS_DIR / "classifier.onnx"))
+def _load_categories():
+    global _categories
     if _categories is None:
         _categories = json.loads((ARTIFACTS_DIR / "categories.json").read_text())
-    return _vectorizer, _session, _categories
+    return _categories
 
 
 def _extract_amount(text: str):
@@ -78,20 +70,13 @@ def _unrecognized_item(raw) -> dict:
 
 
 def _classify_one(raw) -> dict:
-    reason = unanalyzable_reason(raw)
-    if reason:
+    result = engine.analyze(TASK_NAME, raw)
+    if isinstance(result, str):
         return _unrecognized_item(raw)
 
-    cleaned = raw.strip()[:MAX_CHARS]
-    vectorizer, session, categories = _load_artifacts()
-    vector = vectorizer.transform([cleaned]).toarray().astype(np.float32)
-
-    input_name = session.get_inputs()[0].name
-    labels, probabilities = session.run(["label", "probabilities"], {input_name: vector})
-    label_id = int(labels[0])
-    confidence = float(probabilities[0][label_id])
-    amount = _extract_amount(cleaned)
-    direction = _extract_direction(cleaned)
+    categories = _load_categories()
+    amount = _extract_amount(result.text)
+    direction = _extract_direction(result.text)
 
     # Confidence alone isn't a reliable "is this a transaction" gate — a
     # message like "Happy birthday!" can still land a mid-confidence category
@@ -99,15 +84,15 @@ def _classify_one(raw) -> dict:
     # transaction SMS always has at least one.
     looks_like_a_transaction = amount is not None or direction is not None
 
-    if confidence < MIN_CATEGORY_CONFIDENCE or not looks_like_a_transaction:
-        item = _unrecognized_item(cleaned)
-        item["confidence"] = round(confidence, 3)
+    if result.confidence < MIN_CATEGORY_CONFIDENCE or not looks_like_a_transaction:
+        item = _unrecognized_item(result.text)
+        item["confidence"] = round(result.confidence, 3)
         return item
 
     return {
-        "text": cleaned,
-        "category": categories[label_id],
-        "confidence": round(confidence, 3),
+        "text": result.text,
+        "category": categories[result.label_id],
+        "confidence": round(result.confidence, 3),
         "amount": amount,
         "direction": direction,
     }

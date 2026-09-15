@@ -13,11 +13,45 @@ Everything runs **fully locally** on a Snapdragon-powered HP PC, using the devic
 
 Both features are really the same three-step pipeline pointed at different inputs: **read** (OCR pulls text out of a screenshot, or the raw transaction text is used as-is), **understand** (a small local model — compiled and run on-device through Qualcomm AI Hub's NPU tooling — classifies or categorizes that text), and **explain** (the result is turned into one plain-language line a non-technical person can read, like "this looks like a scam because it asks you to click a link and act immediately" or "your top spend this month was food delivery"). Sharing that pipeline between the scam-check and spend-insight features means one on-device model-serving layer does both jobs, instead of building two separate apps.
 
+## Architecture: one engine, two jobs
+
+`classify_scam()` and `categorize_transactions()` don't each load a model and run inference themselves. They both call through **one shared `NXTSightEngine` object** ([src/pipeline/engine.py](src/pipeline/engine.py)) — the only piece of code in the whole app that ever touches ONNX Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. What's different per feature is registered as a `Task` (its own trained artifacts, its own confidence rules) — not a second copy of the model-serving code.
+
+```
+                         ┌───────────────────────────────────────┐
+                         │            NXTSightEngine              │   ← ONE shared object
+                         │        src/pipeline/engine.py          │     (verified in
+                         │                                         │      tests/test_engine.py:
+                         │  text_guard.unanalyzable_reason(text)  │      both task modules
+                         │  TF-IDF vectorize                      │      hold the same
+                         │  runtime.create_inference_session()    │      `engine` instance)
+                         │    → QNN (Snapdragon NPU) or CPU,      │
+                         │      auto-detected, every call         │
+                         └────────────────┬────────────────────────┘
+                                           │
+                            engine.analyze(task_name, text)
+                                           │
+                  ┌────────────────────────┴─────────────────────────┐
+                  │                                                    │
+        Task "scam_detection"                            Task "spend_categorization"
+        artifacts/vectorizer.joblib                       artifacts/vectorizer.joblib
+        artifacts/classifier.onnx (binary)                artifacts/classifier.onnx (11-class)
+                  │                                                    │
+      src/scam_detector/classifier.py                src/spend_categorizer/categorizer.py
+      classify_scam(text):                            categorize_transactions(texts):
+        - interprets label as is_scam                   - interprets label as a category name
+        - reason: top scam/legit terms                  - amount/direction via regex (non-ML)
+          from the engine's own vocabulary               - rolls results into one insight
+        → {is_scam, confidence, reason}                 → {categorized, insight}
+```
+
+Each task still trains its **own** model — a binary scam flag and an 11-way spending category are genuinely different problems, so faking one shared set of weights would just be a worse model for both jobs. What's genuinely shared, end to end, is the serving code: text validation, vectorization, session creation, NPU/CPU detection, session caching. That's the part that actually runs on-device, and it's one object doing it for both features — which is the whole pitch.
+
 ## Scam classifier
 
 `classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/scam_detector/classifier.py](src/scam_detector/classifier.py)) looks for the patterns behind fake bank alerts, OTP-sharing requests, too-good-to-be-true investment offers, urgent account-blocked threats, and fake delivery/KYC/job-offer scams.
 
-**The model:** a TF-IDF + Logistic Regression classifier trained on 60 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx` and run through the same QNN-aware `runtime.py` used for OCR — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
+**The model:** a TF-IDF + Logistic Regression classifier trained on 60 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-two-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
 
 ```bash
 python -m src.scam_detector.train_classifier
@@ -45,7 +79,7 @@ python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on r
 
 `categorize_transactions(list_of_texts) -> {"categorized": [...], "insight": str}` ([src/spend_categorizer/categorizer.py](src/spend_categorizer/categorizer.py)) takes a batch of bank/UPI transaction SMS text and sorts each into one of 11 categories (Food & Dining, Groceries, Shopping, Transport, Bills & Utilities, Entertainment, Transfers & UPI P2P, Income & Refunds, Healthcare, Investment & Savings, Cash Withdrawal), then produces one plain-language spending insight across the batch.
 
-**Reuses the same local-model pattern as the scam classifier** — deliberately, per the brief: TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, run through the same `runtime.py` QNN-aware session creator, and gibberish/non-English input is rejected by the exact same [`text_guard.unanalyzable_reason()`](src/pipeline/text_guard.py) helper the scam classifier uses (extracted out so both stages share one definition instead of two copies). Retrain it with:
+**Calls through the same shared `NXTSightEngine`** as the scam classifier (see [Architecture](#architecture-one-engine-two-jobs) above) — TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, registered as its own Task. This module never imports `onnxruntime` or `joblib` directly; every model-serving line (text validation, vectorization, NPU/CPU session creation) lives once, in the engine, not once per feature. Retrain it with:
 
 ```bash
 python -m src.spend_categorizer.train_classifier
@@ -79,7 +113,8 @@ NXTSight/
 │   ├── pipeline/
 │   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
 │   │   ├── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
-│   │   └── text_guard.py    # shared "is this text analyzable" check (gibberish/non-English/empty)
+│   │   ├── text_guard.py    # shared "is this text analyzable" check (gibberish/non-English/empty)
+│   │   └── engine.py        # NXTSightEngine: the one shared object both tasks call through
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
@@ -97,7 +132,7 @@ NXTSight/
 │   └── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
 ├── data/samples/            # sample screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
-├── tests/                   # unit tests
+├── tests/                   # unit tests, incl. test_engine.py (proves the shared-object architecture)
 ├── assets/screenshots/      # demo screenshots for the submission write-up
 ├── requirements.txt
 └── README.md

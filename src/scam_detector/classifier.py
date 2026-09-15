@@ -1,41 +1,36 @@
-"""Scam-classification stage of the NXTSight pipeline.
+"""Scam-classification task, running on NXTSight's shared on-device engine.
 
 classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}
 
-Backed by a small TF-IDF + Logistic Regression model exported to ONNX
-(train_classifier.py builds it — 60 labeled examples, ~15KB model) and run
-through src/pipeline/runtime.py — the same QNN-aware session creator used
-for OCR, so once this exact .onnx file is compiled for Snapdragon via AI
-Hub, it runs on the NPU with no code change here.
+The model itself is a small TF-IDF + Logistic Regression classifier
+exported to ONNX (train_classifier.py builds it — 60 labeled examples,
+~15KB). This module doesn't load it or run inference directly — it
+registers a Task with src.pipeline.engine.engine and calls engine.analyze(),
+the same shared object the spend categorizer calls through. Everything
+below is scam-specific interpretation of the engine's raw Prediction: the
+binary is_scam flag and the human-readable `reason` built from the model's
+own learned vocabulary.
 """
 
 import json
 from pathlib import Path
 
-import numpy as np
-from joblib import load
-
-from src.pipeline.runtime import create_inference_session
-from src.pipeline.text_guard import unanalyzable_reason
+from src.pipeline.engine import Task, engine
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
-MAX_CHARS = 4000  # generous upper bound for a screenshot's worth of text
+TASK_NAME = "scam_detection"
 REASON_TERMS_SHOWN = 4
 
-_vectorizer = None
-_session = None
+engine.register_task(Task(name=TASK_NAME, artifacts_dir=ARTIFACTS_DIR, max_chars=4000))
+
 _top_terms = None
 
 
-def _load_artifacts():
-    global _vectorizer, _session, _top_terms
-    if _vectorizer is None:
-        _vectorizer = load(ARTIFACTS_DIR / "vectorizer.joblib")
-    if _session is None:
-        _session, _ = create_inference_session(str(ARTIFACTS_DIR / "classifier.onnx"))
+def _load_top_terms():
+    global _top_terms
     if _top_terms is None:
         _top_terms = json.loads((ARTIFACTS_DIR / "top_terms.json").read_text())
-    return _vectorizer, _session, _top_terms
+    return _top_terms
 
 
 def _unanalyzable(reason: str) -> dict:
@@ -43,21 +38,14 @@ def _unanalyzable(reason: str) -> dict:
 
 
 def classify_scam(text) -> dict:
-    reason = unanalyzable_reason(text)
-    if reason:
-        return _unanalyzable(reason)
+    result = engine.analyze(TASK_NAME, text)
+    if isinstance(result, str):
+        return _unanalyzable(result)
 
-    truncated = text.strip()[:MAX_CHARS]
+    is_scam = bool(result.label_id)
 
-    vectorizer, session, top_terms = _load_artifacts()
-    vector = vectorizer.transform([truncated]).toarray().astype(np.float32)
-
-    input_name = session.get_inputs()[0].name
-    labels, probabilities = session.run(["label", "probabilities"], {input_name: vector})
-    is_scam = bool(labels[0])
-    result_confidence = float(probabilities[0][1] if is_scam else probabilities[0][0])
-
-    present_terms = set(vectorizer.build_analyzer()(truncated))
+    top_terms = _load_top_terms()
+    present_terms = engine.vocabulary_terms(TASK_NAME, result.text)
     candidate_pool = top_terms["scam"] if is_scam else top_terms["legit"]
     matched = [term for term in candidate_pool if term in present_terms][:REASON_TERMS_SHOWN]
 
@@ -76,6 +64,6 @@ def classify_scam(text) -> dict:
 
     return {
         "is_scam": is_scam,
-        "confidence": round(result_confidence, 3),
+        "confidence": round(result.confidence, 3),
         "reason": reason,
     }
