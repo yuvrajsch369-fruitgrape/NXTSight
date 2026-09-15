@@ -37,5 +37,9 @@ scikit-learn
 skl2onnx
 langdetect
 
+# Demo UI (app.py) — a minimal local web app, no login/accounts, so the
+# on-device pipeline can be tried live without wiring up a real phone feed.
+streamlit
+
 # Dev tooling
 pytest

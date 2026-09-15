@@ -9,6 +9,16 @@ NXTSight is a small on-device app with two features that share one pipeline:
 
 Everything runs **fully locally** on a Snapdragon-powered HP PC, using the device's NPU via Qualcomm AI Hub — no cloud calls, no data leaving the machine.
 
+## Live demo
+
+```bash
+streamlit run app.py
+```
+
+Opens a minimal local web page ([app.py](app.py)) with two tabs — drop in a screenshot and see the scam verdict, or paste/load sample transaction text and see it categorized with an insight. No login, no accounts, nothing that talks to a server outside this machine. It calls the exact same `classify_scam` / `categorize_transactions` functions used by the CLI and the test suite — the UI is a thin wrapper, not a separate code path.
+
+**The UI itself carries a persistent banner** (not just this README) making clear that manual upload/paste is a demo simplification: the real, intended product reads incoming SMS/notifications automatically in the background — the same way Walnut or Money View already do in India — so nobody ever opens an app or types anything.
+
 ## How it works
 
 Both features are really the same three-step pipeline pointed at different inputs: **read** (OCR pulls text out of a screenshot, or the raw transaction text is used as-is), **understand** (a small local model — compiled and run on-device through Qualcomm AI Hub's NPU tooling — classifies or categorizes that text), and **explain** (the result is turned into one plain-language line a non-technical person can read, like "this looks like a scam because it asks you to click a link and act immediately" or "your top spend this month was food delivery"). Sharing that pipeline between the scam-check and spend-insight features means one on-device model-serving layer does both jobs, instead of building two separate apps.
@@ -109,6 +119,7 @@ python scripts/aihub_compile_spend_categorizer.py          # compiles + profiles
 
 ```
 NXTSight/
+├── app.py                   # live demo UI (streamlit run app.py) — screenshot -> verdict, or transactions -> insight
 ├── src/
 │   ├── pipeline/
 │   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
