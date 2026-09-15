@@ -14,15 +14,12 @@ from pathlib import Path
 
 import numpy as np
 from joblib import load
-from langdetect import LangDetectException, detect_langs
 
 from src.pipeline.runtime import create_inference_session
+from src.pipeline.text_guard import unanalyzable_reason
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 MAX_CHARS = 4000  # generous upper bound for a screenshot's worth of text
-MIN_CHARS = 3
-MIN_LETTER_RATIO = 0.3  # below this, text is mostly symbols/numbers, not language
-MIN_LANGDETECT_CONFIDENCE = 0.70
 REASON_TERMS_SHOWN = 4
 
 _vectorizer = None
@@ -41,54 +38,16 @@ def _load_artifacts():
     return _vectorizer, _session, _top_terms
 
 
-def _detect_language(text: str):
-    """Return (lang_code, confidence) or (None, None) if undetectable."""
-    try:
-        candidates = detect_langs(text)
-    except LangDetectException:
-        return None, None
-    if not candidates:
-        return None, None
-    top = candidates[0]
-    return top.lang, top.prob
-
-
 def _unanalyzable(reason: str) -> dict:
-    return {"is_scam": False, "confidence": 0.0, "reason": reason}
+    return {"is_scam": False, "confidence": 0.0, "reason": f"Couldn't analyze this: {reason}."}
 
 
 def classify_scam(text) -> dict:
-    if text is None:
-        return _unanalyzable("Couldn't analyze this: no text provided.")
+    reason = unanalyzable_reason(text)
+    if reason:
+        return _unanalyzable(reason)
 
-    cleaned = text.strip()
-    if not cleaned:
-        return _unanalyzable("Couldn't analyze this: no text provided.")
-
-    if len(cleaned) < MIN_CHARS:
-        return _unanalyzable("Couldn't analyze this: text is too short to judge.")
-
-    truncated = cleaned[:MAX_CHARS]
-
-    letter_ratio = sum(c.isalpha() for c in truncated) / len(truncated)
-    if letter_ratio < MIN_LETTER_RATIO:
-        return _unanalyzable(
-            "Couldn't analyze this: text doesn't look like readable language (too few letters)."
-        )
-
-    lang, confidence = _detect_language(truncated)
-    if lang is None:
-        return _unanalyzable(
-            "Couldn't analyze this: text doesn't look like readable language (gibberish)."
-        )
-    if confidence < MIN_LANGDETECT_CONFIDENCE:
-        return _unanalyzable(
-            "Couldn't analyze this: couldn't confidently identify the language (possibly gibberish)."
-        )
-    if lang != "en":
-        return _unanalyzable(
-            f"Couldn't analyze this: detected language '{lang}' — this model only supports English."
-        )
+    truncated = text.strip()[:MAX_CHARS]
 
     vectorizer, session, top_terms = _load_artifacts()
     vector = vectorizer.transform([truncated]).toarray().astype(np.float32)

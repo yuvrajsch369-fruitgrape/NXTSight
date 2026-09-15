@@ -41,6 +41,36 @@ python -m src.scam_detector.train_classifier      # produces the .onnx
 python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on real Snapdragon hardware
 ```
 
+## Spend categorizer
+
+`categorize_transactions(list_of_texts) -> {"categorized": [...], "insight": str}` ([src/spend_categorizer/categorizer.py](src/spend_categorizer/categorizer.py)) takes a batch of bank/UPI transaction SMS text and sorts each into one of 11 categories (Food & Dining, Groceries, Shopping, Transport, Bills & Utilities, Entertainment, Transfers & UPI P2P, Income & Refunds, Healthcare, Investment & Savings, Cash Withdrawal), then produces one plain-language spending insight across the batch.
+
+**Reuses the same local-model pattern as the scam classifier** — deliberately, per the brief: TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, run through the same `runtime.py` QNN-aware session creator, and gibberish/non-English input is rejected by the exact same [`text_guard.unanalyzable_reason()`](src/pipeline/text_guard.py) helper the scam classifier uses (extracted out so both stages share one definition instead of two copies). Retrain it with:
+
+```bash
+python -m src.spend_categorizer.train_classifier
+```
+
+Each item in `categorized` is `{"text", "category", "confidence", "amount", "direction"}` — `amount` and `direction` (`"debit"`/`"credit"`) are pulled out with a small regex, independent of the ML classifier, so `insight` can sum actual rupee amounts by category rather than just counting messages.
+
+**Edge cases** — each returns a clear result rather than crashing:
+
+| Input | Result |
+|---|---|
+| Empty list / `None` / non-list | `{"categorized": [], "insight": "Couldn't analyze this: no transactions provided."}` |
+| A malformed item in the batch (`None`, `""`, a number, gibberish) | That item alone becomes `{"category": "Unrecognized", "confidence": 0.0, ...}` — the rest of the batch still processes normally |
+| Text that isn't actually a transaction (e.g. a casual message) | Categorized "Unrecognized" — gated on *two* independent signals: low classifier confidence (11-way softmax, so a real floor is ~0.20, not 0.5) **and** the absence of any parseable amount/debit-credit cue. Confidence alone let a false positive through in testing ("Happy birthday!" scored 0.28 on "Food & Dining"); requiring an actual amount or debit/credit keyword too closed that gap. |
+| All items unrecognized | `insight: "Couldn't analyze this: none of the provided transactions could be understood."` |
+
+**Honest limitation:** with only ~8 training examples per category, a few genuinely novel merchant names get misclassified into a neighboring category (e.g. a rent-split payment landed in "Shopping" instead of "Transfers & UPI P2P" in testing) rather than being rejected outright — expected behavior for a tiny bag-of-words model with zero semantic generalization. More labeled examples in `data.py` is the direct fix.
+
+**AI Hub path** (same shape as the scam classifier):
+
+```bash
+python -m src.spend_categorizer.train_classifier          # produces the .onnx
+python scripts/aihub_compile_spend_categorizer.py          # compiles + profiles it on real Snapdragon hardware
+```
+
 ## Project structure
 
 ```
@@ -48,17 +78,23 @@ NXTSight/
 ├── src/
 │   ├── pipeline/
 │   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
-│   │   └── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
+│   │   ├── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
+│   │   └── text_guard.py    # shared "is this text analyzable" check (gibberish/non-English/empty)
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
 │   │   ├── classifier.py         # classify_scam(text) -> {is_scam, confidence, reason}
 │   │   └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
 │   └── spend_categorizer/   # feature 2: transaction text parsing + spend categorization
+│       ├── data.py               # labeled training examples (11 categories)
+│       ├── train_classifier.py   # local build step: trains + exports classifier.onnx
+│       ├── categorizer.py        # categorize_transactions(texts) -> {categorized, insight}
+│       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, categories.json
 ├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
 ├── scripts/
-│   ├── aihub_profile_easyocr.py          # one-off: profile the OCR model on real Snapdragon hardware
-│   └── aihub_compile_scam_classifier.py  # one-off: compile + profile the scam classifier for Snapdragon
+│   ├── aihub_profile_easyocr.py             # one-off: profile the OCR model on real Snapdragon hardware
+│   ├── aihub_compile_scam_classifier.py     # one-off: compile + profile the scam classifier for Snapdragon
+│   └── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
 ├── data/samples/            # sample screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests
@@ -69,9 +105,9 @@ NXTSight/
 
 ## Status
 
-OCR (`extract_text_from_image`), the NPU/CPU execution-provider auto-detect
-(`runtime.py`), and scam classification (`classify_scam`) are working. Spend
-categorization is not implemented yet.
+All three pipeline stages are working: OCR (`extract_text_from_image`), the
+NPU/CPU execution-provider auto-detect (`runtime.py`), scam classification
+(`classify_scam`), and spend categorization (`categorize_transactions`).
 
 ## Setup
 
