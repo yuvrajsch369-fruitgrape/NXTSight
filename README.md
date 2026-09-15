@@ -72,8 +72,13 @@ Already bundled in the repo — no need to find your own test data:
 | Scam scanner | [`data/samples/scam_lottery_win.png`](data/samples/scam_lottery_win.png) | Fake lottery/prize-win message asking for personal details |
 | Scam scanner | [`data/samples/scam_parcel_customs_fee.png`](data/samples/scam_parcel_customs_fee.png) | Fake "pay a customs fee to release your parcel" message |
 | Spend Insight | built into `app.py` (`SAMPLE_TRANSACTIONS`) | 8 realistic bank/UPI SMS lines — Swiggy, Amazon, Uber, a salary credit, Netflix, an ATM withdrawal, a mutual fund SIP, an electricity bill |
+| Receipt / Bill Scanner | [`data/samples/receipt_upi_confirmation.png`](data/samples/receipt_upi_confirmation.png) | A GPay/PhonePe-style "Payment Successful" screen |
+| Receipt / Bill Scanner | [`data/samples/receipt_printed_grocery.png`](data/samples/receipt_printed_grocery.png) | A printed grocery-store receipt with 7 line items |
+| Receipt / Bill Scanner | [`data/samples/receipt_multi_item_bill.png`](data/samples/receipt_multi_item_bill.png) | A restaurant bill with subtotal/tax/service-charge decoys, to test picking the *real* total |
+| Receipt / Bill Scanner | [`data/samples/receipt_blurry_photo.png`](data/samples/receipt_blurry_photo.png) | A heavily blurred photo — the "this should fail cleanly, not guess" case |
+| Receipt / Bill Scanner | [`data/samples/receipt_handwritten_note.png`](data/samples/receipt_handwritten_note.png) | A handwritten IOU note — the other "should fail cleanly" case |
 
-Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box.
+Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box; the receipt scanner accepts any payment confirmation, receipt, or bill screenshot.
 
 ## Architecture: one engine, two jobs
 
@@ -151,7 +156,7 @@ python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on r
 python -m src.spend_categorizer.train_classifier
 ```
 
-Each item in `categorized` is `{"text", "category", "confidence", "amount", "direction"}` — `amount` and `direction` (`"debit"`/`"credit"`) are pulled out with a small regex, independent of the ML classifier, so `insight` can sum actual rupee amounts by category rather than just counting messages.
+Each item in `categorized` is `{"text", "category", "confidence", "amount", "direction", "source"}` — `amount` and `direction` (`"debit"`/`"credit"`) are pulled out with a small regex, independent of the ML classifier, so `insight` can sum actual rupee amounts by category rather than just counting messages. `list_of_texts` accepts plain strings (source defaults to `"sms"`) or `{"text": ..., "source": ...}` dicts — see [Receipt / Bill Scanner](#receipt--bill-scanner) below, which feeds screenshot-derived transactions through this exact same function tagged `source="screenshot"`.
 
 **Edge cases** — each returns a clear result rather than crashing:
 
@@ -170,6 +175,30 @@ Each item in `categorized` is `{"text", "category", "confidence", "amount", "dir
 python -m src.spend_categorizer.train_classifier          # produces the .onnx
 python scripts/aihub_compile_spend_categorizer.py          # compiles + profiles it on real Snapdragon hardware
 ```
+
+## Receipt / Bill Scanner
+
+A third input path into the same spend insight: scan a screenshot of a payment confirmation, printed receipt, or bill — not just SMS text — and add what it finds to the same spending summary.
+
+`process_receipt_screenshot(image_path)` ([src/spend_categorizer/receipt_parser.py](src/spend_categorizer/receipt_parser.py)) reuses `extract_text_from_image()` (the exact same OCR function the scam scanner uses) for the "read" step, then does something the SMS path doesn't need to: receipt and payment-app layouts don't read like bank SMS at all — no "debited"/"credited" boilerplate, the merchant name and amount are scattered across separate lines rather than one sentence. Feeding that raw OCR text straight into the SMS-trained spend classifier would be unreliable. Instead, it pulls out `{merchant, amount, date}` with layout-aware heuristics, builds a normalized sentence in the shape the classifier actually knows — `"Rs 450.00 debited via UPI to SWIGGY on 12 Sep 2025."` — and hands that to the **exact same** `categorize_transactions()` used for SMS, tagged `source="screenshot"`. Reused, not duplicated.
+
+**Amount extraction**, in priority order: (1) a currency-marked number (`Rs`/`₹`/`INR`) on a line that also says "total"/"paid"/"amount" — avoids picking a per-item price off a multi-line bill; (2) otherwise the largest currency-marked number anywhere; (3) last resort, a bare number alone on its own line with nothing else — how a payment app's amount often OCRs when its ₹ glyph isn't captured as text (this is the *only* way GPay/PhonePe-style "Payment Successful" screens show an amount at all). That third tier is guarded two ways, because a stray digit an OCR hallucinates from photo noise must never be silently treated as a real amount: it has to be ≥ ₹10, and the text has to contain some actual payment-related word ("paid", "successful", "transaction", ...) somewhere — not just one isolated number with nothing recognizable around it.
+
+**Merchant extraction** takes the first plausible text line (skipping app-chrome labels like "Payment Successful," "Paid to," date labels, and anything that's itself an amount), and stitches in the next line too if the first one is short — OCR often splits a header like "BIG BAZAAR" across two lines ("BIG" / "BAZAAR").
+
+**Tested against 5 varied sample screenshots** (bundled in `data/samples/receipt_*.png`, synthetic but realistic — a UPI confirmation, a printed grocery receipt, a handwritten IOU note, a deliberately blurred photo, and a multi-item restaurant bill with decoy subtotal/tax amounts). Real, current results, locked in as regression tests in [tests/test_receipt_parser.py](tests/test_receipt_parser.py):
+
+| Sample | Result | Where it struggles |
+|---|---|---|
+| UPI payment confirmation | ✅ Merchant, amount, date all correct (SWIGGY, ₹450, 12 Sep 2025) | — |
+| Printed grocery receipt | ✅ All correct (BIG BAZAAR, ₹845, 15/09/2025) | — |
+| Multi-item restaurant bill | ✅ Merchant and total-vs-line-item selection both correct | OCR splits the total's decimal cents onto their own line ("933" / "50"), and the amount picker doesn't rejoin them — parsed as ₹933.00 instead of ₹933.50. Small, but a real, known rounding-like error, not hidden. |
+| Blurry photo | ✅ Correctly declines: *"couldn't find a clear amount in this image — it may be too blurry, cropped, or in a layout this can't read yet."* | OCR extracts almost nothing usable from a heavily blurred image, so there's nothing to parse — this is the intended, safe outcome, not a bug. |
+| Handwritten note | ✅ Correctly declines, same message | OCR misreads the handwritten digit "5" as the letter "S" ("Rs S00" instead of "Rs 500") — a real, common handwriting-OCR failure mode. Because "S00" isn't a valid number, the parser correctly refuses to guess rather than inventing a wrong amount. |
+
+Two genuine, unresolved limitations, not glossed over: **decimal cents can be silently dropped** when OCR splits a total across lines (the multi-item bill case), and **handwritten amounts are essentially unsupported** — any digit an OCR misreads as a letter simply won't parse, which is the correct failure mode (never invent a number) but means legitimate handwritten receipts will often decline entirely rather than succeed with reduced confidence. Neither is silent or crashes; both are exactly the "clear message, never a wrong number" behavior the rest of the app follows.
+
+**In the demo UI:** the **Receipt / Bill Scanner** tab shows the extracted merchant/amount/date (or the decline message) and an **Add to Spend Insight** button. Added items show up in the **Spend Insight** tab's results table with a **Source** column reading "From SMS" or "From screenshot," and the top-line insight sentence includes them in the same total.
 
 ## Project structure
 
@@ -190,10 +219,11 @@ NXTSight/
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
 │   │   ├── classifier.py         # classify_scam(text) -> {is_scam, confidence, reason}
 │   │   └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
-│   └── spend_categorizer/   # feature 2: transaction text parsing + spend categorization
+│   └── spend_categorizer/   # feature 2: transaction parsing + spend categorization (SMS and screenshots)
 │       ├── data.py               # labeled training examples (11 categories)
 │       ├── train_classifier.py   # local build step: trains + exports classifier.onnx
 │       ├── categorizer.py        # categorize_transactions(texts) -> {categorized, insight}
+│       ├── receipt_parser.py     # process_receipt_screenshot(): receipt/bill image -> categorize_transactions() input
 │       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, categories.json
 ├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
 ├── scripts/
@@ -201,7 +231,7 @@ NXTSight/
 │   ├── aihub_profile_easyocr.py             # one-off: profile the OCR model on real Snapdragon hardware
 │   ├── aihub_compile_scam_classifier.py     # one-off: compile + profile the scam classifier for Snapdragon
 │   └── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
-├── data/samples/            # sample screenshots and sample transaction text for demos/tests
+├── data/samples/            # sample scam/receipt screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
 │                             # test_network_guard.py, test_preflight.py
@@ -288,4 +318,4 @@ Both models load and report their expected shapes locally through `runtime.py` �
 
 ## Status
 
-All three pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), and spend categorization (`categorize_transactions`). The scam and spend classifiers run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR runs on CPU today, with its Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 86 tests, all passing, verified on a from-scratch install.
+All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), and receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source). The scam and spend classifiers run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR runs on CPU today, with its Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 101 tests, all passing, verified on a from-scratch install.

@@ -60,6 +60,7 @@ from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
+from src.spend_categorizer.receipt_parser import process_receipt_screenshot
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "data" / "samples"
 
@@ -111,13 +112,18 @@ st.warning(
     "This screen exists only to demo the underlying engine; it is not the intended product experience."
 )
 
-scam_tab, spend_tab = st.tabs(["Scam Screenshot Scanner", "Spend Insight"])
+if "screenshot_transactions" not in st.session_state:
+    st.session_state.screenshot_transactions = []
+
+scam_tab, spend_tab, receipt_tab = st.tabs(
+    ["Scam Screenshot Scanner", "Spend Insight", "Receipt / Bill Scanner"]
+)
 
 with scam_tab:
     st.subheader("Scam Screenshot Scanner")
     st.write("Upload a screenshot of a message, or try one of the sample scam screenshots below.")
 
-    sample_files = sorted(SAMPLES_DIR.glob("*.png")) if SAMPLES_DIR.exists() else []
+    sample_files = sorted(SAMPLES_DIR.glob("scam_*.png")) if SAMPLES_DIR.exists() else []
     sample_names = ["Upload my own"] + [f.stem for f in sample_files]
     choice = st.radio("Image source", sample_names, horizontal=True, label_visibility="collapsed")
 
@@ -179,12 +185,22 @@ with spend_tab:
         placeholder="Paste one transaction message per line...",
     )
 
+    if st.session_state.screenshot_transactions:
+        st.caption(
+            f"Plus {len(st.session_state.screenshot_transactions)} transaction(s) added from receipt/bill "
+            "screenshots (see the **Receipt / Bill Scanner** tab) — included automatically below."
+        )
+        if st.button("Clear screenshot-added transactions"):
+            st.session_state.screenshot_transactions = []
+            st.rerun()
+
     if st.button("Analyze spending", type="primary"):
         try:
-            lines = [line.strip() for line in transactions_text.split("\n") if line.strip()]
+            sms_lines = [line.strip() for line in transactions_text.split("\n") if line.strip()]
+            combined = sms_lines + st.session_state.screenshot_transactions
 
             with st.spinner("Categorizing transactions..."):
-                result = categorize_transactions(lines)
+                result = categorize_transactions(combined)
 
             if result["insight"].startswith("Couldn't analyze this"):
                 st.warning(result["insight"])
@@ -200,9 +216,77 @@ with spend_tab:
                             "Confidence": f"{item['confidence'] * 100:.0f}%",
                             "Amount": f"₹{item['amount']:,.0f}" if item["amount"] is not None else "—",
                             "Direction": item["direction"] or "—",
+                            "Source": "From screenshot" if item["source"] == "screenshot" else "From SMS",
                         }
                         for item in result["categorized"]
                     ]
                 )
         except Exception as exc:
             st.error(f"Couldn't analyze these transactions: {exc}")
+
+with receipt_tab:
+    st.subheader("Receipt / Bill Scanner")
+    st.write(
+        "Upload a screenshot of a payment confirmation, receipt, or bill — or try one of the "
+        "sample screenshots below — and add what it finds straight into Spend Insight."
+    )
+
+    receipt_sample_files = sorted(SAMPLES_DIR.glob("receipt_*.png")) if SAMPLES_DIR.exists() else []
+    receipt_sample_names = ["Upload my own"] + [f.stem for f in receipt_sample_files]
+    receipt_choice = st.radio(
+        "Receipt image source", receipt_sample_names, horizontal=True, label_visibility="collapsed"
+    )
+
+    receipt_image_path = None
+    if receipt_choice == "Upload my own":
+        receipt_uploaded = st.file_uploader(
+            "Receipt image", type=["png", "jpg", "jpeg"], label_visibility="collapsed", key="receipt_uploader"
+        )
+        if receipt_uploaded is not None:
+            suffix = Path(receipt_uploaded.name).suffix or ".png"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(receipt_uploaded.getvalue())
+                receipt_image_path = Path(tmp.name)
+    else:
+        receipt_image_path = next((f for f in receipt_sample_files if f.stem == receipt_choice), None)
+        if receipt_image_path is None:
+            st.error(f"Sample '{receipt_choice}' is no longer available — pick another, or upload your own.")
+
+    if receipt_image_path is not None:
+        try:
+            st.image(str(receipt_image_path), width=320)
+
+            with st.spinner("Reading the image and finding the amount, merchant, and date..."):
+                receipt_result = process_receipt_screenshot(str(receipt_image_path))
+
+            if not receipt_result["ok"]:
+                st.warning(receipt_result["message"])
+                if receipt_result.get("raw_text"):
+                    with st.expander("Extracted text (for reference)"):
+                        st.text(receipt_result["raw_text"])
+            else:
+                st.success("Found a transaction in this image:")
+                found_col1, found_col2, found_col3 = st.columns(3)
+                found_col1.metric("Amount", f"₹{receipt_result['amount']:,.2f}")
+                found_col2.metric("Merchant", receipt_result["merchant"] or "Unknown")
+                found_col3.metric("Date", receipt_result["date"] or "Not found")
+
+                with st.expander("Extracted text (for reference)"):
+                    st.text(receipt_result["raw_text"])
+
+                if st.button("Add to Spend Insight", type="primary"):
+                    st.session_state.screenshot_transactions.append(
+                        {"text": receipt_result["transaction_text"], "source": "screenshot"}
+                    )
+                    # Tabs' code all runs every rerun regardless of which tab
+                    # is visible, but in script order — the Spend Insight tab
+                    # above already rendered by the time this button's click
+                    # is handled, so without forcing a fresh rerun here it
+                    # wouldn't show this addition until some *later*
+                    # unrelated interaction. st.toast() (unlike st.success)
+                    # survives the rerun that follows it, so the confirmation
+                    # is still visible on the other side.
+                    st.toast("Added to Spend Insight — open that tab and click Analyze spending to see it.")
+                    st.rerun()
+        except Exception as exc:
+            st.error(f"Couldn't process this image: {exc}")

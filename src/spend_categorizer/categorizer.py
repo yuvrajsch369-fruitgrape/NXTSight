@@ -74,15 +74,34 @@ def _extract_direction(text: str):
     return "debit" if debit_pos < credit_pos else "credit"
 
 
-def _unrecognized_item(raw) -> dict:
+def _normalize_item(raw):
+    """Accepts a plain string (source defaults to "sms") or a
+    {"text": ..., "source": ...} dict (e.g. source="screenshot" from a
+    receipt scan). Returns (text, source); malformed dicts (missing/non-
+    string "text") pass a non-string through unchanged — the existing
+    engine.analyze() -> text_guard path already rejects those cleanly.
+    """
+    if isinstance(raw, dict):
+        return raw.get("text"), raw.get("source", "sms")
+    return raw, "sms"
+
+
+def _unrecognized_item(raw, source="sms") -> dict:
     text = raw if isinstance(raw, str) else str(raw)
-    return {"text": text, "category": "Unrecognized", "confidence": 0.0, "amount": None, "direction": None}
+    return {
+        "text": text,
+        "category": "Unrecognized",
+        "confidence": 0.0,
+        "amount": None,
+        "direction": None,
+        "source": source,
+    }
 
 
-def _classify_one(raw) -> dict:
+def _classify_one(raw, source="sms") -> dict:
     result = engine.analyze(TASK_NAME, raw)
     if isinstance(result, str):
-        return _unrecognized_item(raw)
+        return _unrecognized_item(raw, source)
 
     categories = _load_categories()
     amount = _extract_amount(result.text)
@@ -100,7 +119,7 @@ def _classify_one(raw) -> dict:
         or not looks_like_a_transaction
         or not category_available
     ):
-        item = _unrecognized_item(result.text)
+        item = _unrecognized_item(result.text, source)
         item["confidence"] = round(result.confidence, 3)
         return item
 
@@ -110,6 +129,7 @@ def _classify_one(raw) -> dict:
         "confidence": round(result.confidence, 3),
         "amount": amount,
         "direction": direction,
+        "source": source,
     }
 
 
@@ -145,9 +165,16 @@ def _build_insight(categorized: list) -> str:
 
 
 def categorize_transactions(list_of_texts) -> dict:
+    """Each item may be a plain string (SMS text, source defaults to "sms")
+    or a {"text": str, "source": str} dict — e.g. {"text": ..., "source":
+    "screenshot"} for a transaction extracted from a receipt photo via
+    receipt_parser.py. Both shapes run through the exact same
+    classification logic; "source" just rides along into the result so
+    screenshot-derived and SMS-derived entries can be told apart.
+    """
     if list_of_texts is None or not isinstance(list_of_texts, (list, tuple)) or len(list_of_texts) == 0:
         return {"categorized": [], "insight": "Couldn't analyze this: no transactions provided."}
 
-    categorized = [_classify_one(raw) for raw in list_of_texts]
+    categorized = [_classify_one(*_normalize_item(raw)) for raw in list_of_texts]
     insight = _build_insight(categorized)
     return {"categorized": categorized, "insight": insight}
