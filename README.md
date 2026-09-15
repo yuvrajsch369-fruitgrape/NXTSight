@@ -5,31 +5,75 @@ Built for the Snapdragon AI Lab Build & Present Challenge.
 NXTSight is a small on-device app with two features that share one pipeline:
 
 1. **Scam Screenshot Scanner** — point it at a screenshot of a suspicious text/WhatsApp/email message and it flags whether the message looks like a financial scam.
-2. **Spend Insight** — feed it sample bank/UPI transaction text and it categorizes the spending and gives a plain-language insight (e.g. "you spent 30% more on food delivery this month").
+2. **Spend Insight** — feed it bank/UPI transaction text and it categorizes the spending and gives a plain-language insight (e.g. "your top spending category was Food & Dining, 24% of total spend").
 
-Everything runs **fully locally** on a Snapdragon-powered HP PC, using the device's NPU via Qualcomm AI Hub — no cloud calls, no data leaving the machine.
+Everything runs **fully locally** — no cloud calls, no account, no data leaving the machine. That claim is demonstrable, not just asserted: the app proves it live, every time it starts (see [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) below).
 
-## Live demo
+## Quick start
+
+Tested on macOS with Python 3.11.9; should work on Windows/Linux with Python 3.9+ (see [Reliability & hardening](#reliability--hardening) for what's independently verified vs. not).
+
+```bash
+git clone https://github.com/yuvrajsch369-fruitgrape/NXTSight.git
+cd NXTSight
+
+python3 -m venv venv            # use `python` instead if your system has no `python3` alias (e.g. some Windows setups)
+source venv/bin/activate        # Windows: venv\Scripts\activate
+
+pip install -r requirements.txt
+python scripts/check_setup.py   # confirms Python version + every dependency is OK before you go further
+```
+
+If you're on macOS and see `CERTIFICATE_VERIFY_FAILED` on first run (a known python.org-installer issue, not an NXTSight bug):
+
+```bash
+export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+```
+
+Then run the app:
 
 ```bash
 streamlit run app.py
 ```
 
-Opens a minimal local web page ([app.py](app.py)) with two tabs — drop in a screenshot and see the scam verdict, or paste/load sample transaction text and see it categorized with an insight. No login, no accounts, nothing that talks to a server outside this machine. It calls the exact same `classify_scam` / `categorize_transactions` functions used by the CLI and the test suite — the UI is a thin wrapper, not a separate code path.
+This opens a local web page in your browser (usually `http://localhost:8501`). Two tabs, both pre-loaded with sample data so there's nothing to hunt for:
 
-**The UI itself carries a persistent banner** (not just this README) making clear that manual upload/paste is a demo simplification: the real, intended product reads incoming SMS/notifications automatically in the background — the same way Walnut or Money View already do in India — so nobody ever opens an app or types anything.
+- **Scam Screenshot Scanner** — click one of the three sample screenshots already selectable on screen (`scam_bank_kyc_alert`, `scam_lottery_win`, `scam_parcel_customs_fee`), or upload your own PNG/JPG. It reads the text out of the image, then flags it as a scam or not with a confidence score and a plain-language reason.
+- **Spend Insight** — click **"Load sample transactions"** to fill the box with 8 realistic bank/UPI SMS messages, then **"Analyze spending"**. Each transaction gets categorized with an amount and direction, and you get one summary sentence across all of them.
 
-**Two more status badges sit right above that banner, on every screen:**
+No login. No account. No setup beyond the commands above. If anything about your environment is incomplete, `check_setup.py` (or the app itself) tells you exactly what's missing and how to fix it — it won't fail with a cryptic error partway through.
 
-- **Execution path** — reads `runtime.select_execution_providers()` and shows the exact same string that gets logged server-side: `CPU (QNN execution provider not available on this machine)` on a dev machine, or `Snapdragon NPU (ONNX Runtime QNN execution provider)` on the real Snapdragon hardware. No need to explain which path is active out loud — it's on screen.
+**Sanity-check without the UI** — if you'd rather verify the code directly, from the project root with the venv active:
 
-- **Network: blocked & verified** — this isn't a claim, it's a live self-test. [`src/pipeline/network_guard.py`](src/pipeline/network_guard.py) patches `socket.socket.connect()` at app startup so any connection to anything other than localhost raises immediately, then the app itself attempts a real outbound connection (to `8.8.8.8:53`) and confirms its own code rejected it — *before* rendering the rest of the page. If that check ever fails, the app shows a red error and refuses to render anything else (`st.stop()`) rather than quietly continuing. This is exactly the "turn off wifi and nothing changes" claim made demonstrable: the badge is proof captured at that instant, not something asserted out loud. Verified in [tests/test_network_guard.py](tests/test_network_guard.py): loopback connections still work (Streamlit needs those), a blocked attempt raises `NetworkBlockedError`, and OCR/scam-classification/spend-categorization all still work correctly with the guard active — proving the pipeline doesn't secretly depend on network once its models are on disk.
+```bash
+python -c "
+from src.scam_detector.classifier import classify_scam
+print(classify_scam('Your account will be blocked in 2 hours unless you verify now. Click here.'))
+"
+```
 
-One honest caveat: this proves the *inference* path is offline. A brand-new machine that has never run NXTSight before would still need network once, on first launch, to let EasyOCR download its model weights (a few hundred MB, cached to `~/.EasyOCR/` afterward) — the guard would loudly block that too if wifi were off on a truly first-ever run. For a presentation, run it once beforehand so the cache exists; after that, the offline guarantee holds for real.
+Expect something like `{'is_scam': True, 'confidence': 0.58, 'reason': "Contains phrases commonly seen in scams: 'verify', 'account'."}`.
 
-## How it works
+## What runs on-device (NPU vs. CPU fallback)
 
-Both features are really the same three-step pipeline pointed at different inputs: **read** (OCR pulls text out of a screenshot, or the raw transaction text is used as-is), **understand** (a small local model — compiled and run on-device through Qualcomm AI Hub's NPU tooling — classifies or categorizes that text), and **explain** (the result is turned into one plain-language line a non-technical person can read, like "this looks like a scam because it asks you to click a link and act immediately" or "your top spend this month was food delivery"). Sharing that pipeline between the scam-check and spend-insight features means one on-device model-serving layer does both jobs, instead of building two separate apps.
+Described honestly, matched to what's actually wired up right now — not what's theoretically possible:
+
+**Scam detection and spend categorization run through the Snapdragon-aware path today.** Both `classify_scam()` and `categorize_transactions()` call through one shared engine ([`src/pipeline/engine.py`](src/pipeline/engine.py)) that loads its model into ONNX Runtime via [`src/pipeline/runtime.py`](src/pipeline/runtime.py). At startup, that code checks whether the machine has Qualcomm's QNN execution provider available — true only on a Snapdragon Windows PC with `onnxruntime-qnn` installed. If it's there, inference runs on the Hexagon NPU. If not (this dev Mac, or any other machine), it falls back to plain CPU inference automatically — same code, same result, no manual flag, no crash. This switch is real, not a plan: proven in [`tests/test_runtime.py`](tests/test_runtime.py), and the live demo shows exactly which path is active on an on-screen badge every time you run it, so nobody has to take it on faith.
+
+**Screenshot OCR does not run through that path yet.** `extract_text_from_image()` currently uses EasyOCR's own PyTorch-based reader, which always runs on CPU regardless of hardware. Separately, we compiled the underlying EasyOCR detector and recognizer models for the Snapdragon X Elite via Qualcomm AI Hub and profiled them on **real physical Snapdragon hardware** in Qualcomm's cloud device farm — genuine measured numbers, not estimates: **38.1ms** (detector) and **20.4ms** (recognizer), see [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) below. That proves the OCR stage *can* run at NPU speed. Wiring that compiled model into the live `extract_text_from_image()` call — replacing EasyOCR's own PyTorch path — is the next integration step, not something already running in the demo. We're telling you this plainly rather than letting the README imply otherwise.
+
+## Sample inputs to try
+
+Already bundled in the repo — no need to find your own test data:
+
+| Feature | Where | What's in it |
+|---|---|---|
+| Scam scanner | [`data/samples/scam_bank_kyc_alert.png`](data/samples/scam_bank_kyc_alert.png) | Fake "update your KYC or your account is blocked" message with a suspicious link |
+| Scam scanner | [`data/samples/scam_lottery_win.png`](data/samples/scam_lottery_win.png) | Fake lottery/prize-win message asking for personal details |
+| Scam scanner | [`data/samples/scam_parcel_customs_fee.png`](data/samples/scam_parcel_customs_fee.png) | Fake "pay a customs fee to release your parcel" message |
+| Spend Insight | built into `app.py` (`SAMPLE_TRANSACTIONS`) | 8 realistic bank/UPI SMS lines — Swiggy, Amazon, Uber, a salary credit, Netflix, an ATM withdrawal, a mutual fund SIP, an electricity bill |
+
+Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box.
 
 ## Architecture: one engine, two jobs
 
@@ -63,13 +107,15 @@ Both features are really the same three-step pipeline pointed at different input
         → {is_scam, confidence, reason}                 → {categorized, insight}
 ```
 
-Each task still trains its **own** model — a binary scam flag and an 11-way spending category are genuinely different problems, so faking one shared set of weights would just be a worse model for both jobs. What's genuinely shared, end to end, is the serving code: text validation, vectorization, session creation, NPU/CPU detection, session caching. That's the part that actually runs on-device, and it's one object doing it for both features — which is the whole pitch.
+Each task still trains its **own** model — a binary scam flag and an 11-way spending category are genuinely different problems, so faking one shared set of weights would just be a worse model for both jobs. What's genuinely shared, end to end, is the serving code: text validation, vectorization, session creation, NPU/CPU detection, session caching. That's the part that actually runs on-device, and it's one object doing it for both features.
+
+Screenshot OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py)) is the "read" step ahead of the scam classifier — it turns an image into text, which then goes through the engine like any other input. As noted above, OCR itself doesn't yet run through this engine's QNN-aware path; the other two features do.
 
 ## Scam classifier
 
 `classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/scam_detector/classifier.py](src/scam_detector/classifier.py)) looks for the patterns behind fake bank alerts, OTP-sharing requests, too-good-to-be-true investment offers, urgent account-blocked threats, and fake delivery/KYC/job-offer scams.
 
-**The model:** a TF-IDF + Logistic Regression classifier trained on 60 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-two-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
+**The model:** a TF-IDF + Logistic Regression classifier trained on 68 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-two-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
 
 ```bash
 python -m src.scam_detector.train_classifier
@@ -85,6 +131,8 @@ Text vectorization deliberately includes legit messages that mention OTPs and ba
 | Extremely long text | Truncated to 4000 characters, then classified normally |
 | Non-English text | `reason: "Couldn't analyze this: detected language '<code>' — this model only supports English."` |
 | Gibberish / symbols-only | `reason: "Couldn't analyze this: ..."` (caught by a letter-ratio check and a language-detection confidence threshold) |
+
+**Accuracy:** checked against 47 held-out examples (none copied from training data) spanning romance scams, fake tech support, fake charity, tax-refund phishing, SIM-swap, crypto/seed-phrase phishing, WhatsApp code-forwarding, and more — **47/47 correct**, zero missed scams. Details in [Reliability & hardening](#reliability--hardening) below.
 
 **AI Hub path:** unlike EasyOCR, this is a custom model, not one from the AI Hub model zoo, so it compiles via the raw `qai_hub` API rather than the `qai_hub_models` CLI:
 
@@ -111,7 +159,7 @@ Each item in `categorized` is `{"text", "category", "confidence", "amount", "dir
 |---|---|
 | Empty list / `None` / non-list | `{"categorized": [], "insight": "Couldn't analyze this: no transactions provided."}` |
 | A malformed item in the batch (`None`, `""`, a number, gibberish) | That item alone becomes `{"category": "Unrecognized", "confidence": 0.0, ...}` — the rest of the batch still processes normally |
-| Text that isn't actually a transaction (e.g. a casual message) | Categorized "Unrecognized" — gated on *two* independent signals: low classifier confidence (11-way softmax, so a real floor is ~0.20, not 0.5) **and** the absence of any parseable amount/debit-credit cue. Confidence alone let a false positive through in testing ("Happy birthday!" scored 0.28 on "Food & Dining"); requiring an actual amount or debit/credit keyword too closed that gap. |
+| Text that isn't actually a transaction (e.g. a casual message) | Categorized "Unrecognized" — gated on *two* independent signals: low classifier confidence (11-way softmax, so a real floor is ~0.20, not 0.5) **and** the absence of any parseable amount/debit-credit cue |
 | All items unrecognized | `insight: "Couldn't analyze this: none of the provided transactions could be understood."` |
 
 **Honest limitation:** with only ~8 training examples per category, a few genuinely novel merchant names get misclassified into a neighboring category (e.g. a rent-split payment landed in "Shopping" instead of "Transfers & UPI P2P" in testing) rather than being rejected outright — expected behavior for a tiny bag-of-words model with zero semantic generalization. More labeled examples in `data.py` is the direct fix.
@@ -162,29 +210,6 @@ NXTSight/
 └── README.md
 ```
 
-## Status
-
-All three pipeline stages are working: OCR (`extract_text_from_image`), the
-NPU/CPU execution-provider auto-detect (`runtime.py`), scam classification
-(`classify_scam`), and spend categorization (`categorize_transactions`).
-
-## Setup
-
-```bash
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-pip install -r requirements.txt
-python scripts/check_setup.py   # confirms Python version + every dependency is OK
-```
-
-Every version in `requirements.txt` is pinned exactly (not left to "whatever's newest today") so this install is reproducible — see [Reliability & hardening](#reliability--hardening) below for why, and what happens if a step here goes wrong.
-
-**First run on macOS:** EasyOCR downloads its model weights the first time it runs. If you installed Python from python.org and see a `CERTIFICATE_VERIFY_FAILED` error, fix it with:
-
-```bash
-export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
-```
-
 ## Reliability & hardening
 
 ### Stress-tested, not just spot-checked
@@ -210,7 +235,7 @@ Proven, not just asserted — [tests/test_hardening.py](tests/test_hardening.py)
 
 ### Pinned dependencies
 
-Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. One real cross-package conflict got caught and fixed during this pass: `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically — a genuinely "quietly breaks depending on install order" bug). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which already has its own separate install instructions above.
+Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. One real cross-package conflict got caught and fixed during this pass: `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically — a genuinely "quietly breaks depending on install order" bug). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which has its own separate install instructions below.
 
 ### What happens on a different machine
 
@@ -220,13 +245,13 @@ Every package in `requirements.txt` is pinned to an exact version captured from 
 | **Missing or incomplete `pip install`** | `app.py` checks the Python version and every required import *before* touching Streamlit's UI machinery, showing exactly which packages are missing and the fix — instead of a raw `ModuleNotFoundError` appearing mid-script. Verified by simulating a partial install (only `streamlit` present): the app showed a clean, itemized error rather than crashing. Run `python scripts/check_setup.py` standalone for the same check before even starting the app. |
 | **No internet during `pip install`** | Not something an app can fix after the fact — pip itself gives a normal, clear network error in this case. What *is* fixed: the exact pins above mean that once install succeeds, it's the same install every time, so a "worked yesterday, broke today" failure from an unrelated upstream release doesn't happen later. |
 | **Too-old Python** | `engine.py` uses `dict[str, Task]`-style type hints (PEP 585), which need Python 3.9+. Both `app.py` and `scripts/check_setup.py` check this explicitly and name the exact minimum version required, rather than failing with a cryptic `TypeError: 'type' object is not subscriptable` deep inside an import. |
-| **Fresh machine, first-ever run, wifi off** | EasyOCR needs network once to download its model weights (documented under [Live demo](#live-demo) above) — `network_guard` would (correctly) block that too. Run the app once with internet before a wifi-off presentation. |
+| **Fresh machine, first-ever run, wifi off** | EasyOCR needs network once to download its model weights (documented under [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above) — `network_guard` would (correctly) block that too. Run the app once with internet before a wifi-off presentation. |
 
 ## Snapdragon / Qualcomm AI Hub
 
-There are two separate pieces here — a **build-time step** you run once, by hand, to get a Snapdragon-ready model, and a **runtime check** the app makes every time it starts.
+There are two separate pieces here — a **build-time step** you run once, by hand, to get a Snapdragon-ready model, and a **runtime check** the app makes every time it starts (already covered in [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above).
 
-### 1. Build-time: compile + profile a model for Snapdragon via AI Hub
+### Build-time: compile + profile a model for Snapdragon via AI Hub
 
 This step turns a model into a `.onnx` file specifically compiled for the Snapdragon X Elite, and confirms it actually runs correctly by profiling it on real, physical Snapdragon hardware in Qualcomm's cloud device farm (not a simulator — useful since most of us don't own a Snapdragon PC to test on directly). It needs your own free AI Hub account and API token from [aihub.qualcomm.com](https://aihub.qualcomm.com); nobody else can run this step for you.
 
@@ -259,23 +284,8 @@ This submits a real job to Qualcomm's cloud, waits for it to run on physical Sna
 | EasyOCR detector | 38.1 ms | 71.2 MB |
 | EasyOCR recognizer | 20.4 ms | 40.9 MB |
 
-Both models load and report their expected shapes locally through `runtime.py` — the detector takes a `(1, 3, 608, 800)` image tensor, matching EasyOCR's documented input resolution. That's solid evidence for the "Present" part of the challenge that this genuinely runs on Snapdragon, not just in theory.
+Both models load and report their expected shapes locally through `runtime.py` — the detector takes a `(1, 3, 608, 800)` image tensor, matching EasyOCR's documented input resolution. That's solid evidence this genuinely runs on Snapdragon, not just in theory — see [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above for the honest caveat that these compiled models aren't yet the ones the live app calls.
 
-### 2. Runtime: automatic NPU/CPU detection
+## Status
 
-`src/pipeline/runtime.py` decides, at startup, how to run a compiled `.onnx` model:
-
-- On a **Snapdragon Windows PC** with `onnxruntime-qnn` installed, ONNX Runtime reports a `QNNExecutionProvider` — `runtime.py` detects it and routes inference to the Hexagon NPU.
-- On **any other machine** (this dev Mac included — Intel Macs have no Qualcomm NPU and no QNN provider at all), it falls back to the plain CPU provider automatically.
-
-No manual flag to flip, and it never crashes for lacking the NPU provider. Every session logs which path is active in plain language, so it's obvious mid-demo which one is running:
-
-```
-[NXTSight] Execution path: CPU (QNN execution provider not available on this machine)
-[NXTSight] ONNX Runtime providers available here: CoreMLExecutionProvider, AzureExecutionProvider, CPUExecutionProvider
-[NXTSight] Session ready on 'models/easyocr_detector/model.onnx' — active provider: CPUExecutionProvider
-```
-
-On the actual Snapdragon HP PC, once `onnxruntime-qnn` is installed, the same code logs `Execution path: Snapdragon NPU (ONNX Runtime QNN execution provider)` instead — nothing else changes.
-
-`tests/test_runtime.py` proves this end-to-end right now, on this dev machine, using a tiny throwaway ONNX model — no Snapdragon hardware or AI Hub account required to verify the detection logic itself works.
+All three pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), and spend categorization (`categorize_transactions`). The scam and spend classifiers run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR runs on CPU today, with its Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 86 tests, all passing, verified on a from-scratch install.
