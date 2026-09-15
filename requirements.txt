@@ -30,7 +30,12 @@ easyocr
 opencv-python-headless<4.10
 
 # Text classification / lightweight local NLP (scam detection, spend categorization)
+# skl2onnx exports the trained scikit-learn classifier to ONNX so it runs
+# through the same QNN-aware runtime.py as the OCR models. langdetect flags
+# non-English/gibberish input before it ever reaches the classifier.
 scikit-learn
+skl2onnx
+langdetect
 
 # Dev tooling
 pytest

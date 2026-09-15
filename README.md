@@ -13,6 +13,34 @@ Everything runs **fully locally** on a Snapdragon-powered HP PC, using the devic
 
 Both features are really the same three-step pipeline pointed at different inputs: **read** (OCR pulls text out of a screenshot, or the raw transaction text is used as-is), **understand** (a small local model — compiled and run on-device through Qualcomm AI Hub's NPU tooling — classifies or categorizes that text), and **explain** (the result is turned into one plain-language line a non-technical person can read, like "this looks like a scam because it asks you to click a link and act immediately" or "your top spend this month was food delivery"). Sharing that pipeline between the scam-check and spend-insight features means one on-device model-serving layer does both jobs, instead of building two separate apps.
 
+## Scam classifier
+
+`classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/scam_detector/classifier.py](src/scam_detector/classifier.py)) looks for the patterns behind fake bank alerts, OTP-sharing requests, too-good-to-be-true investment offers, urgent account-blocked threats, and fake delivery/KYC/job-offer scams.
+
+**The model:** a TF-IDF + Logistic Regression classifier trained on 60 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx` and run through the same QNN-aware `runtime.py` used for OCR — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
+
+```bash
+python -m src.scam_detector.train_classifier
+```
+
+Text vectorization deliberately includes legit messages that mention OTPs and banks — the model needs to learn the *pattern* (being asked to hand over an OTP, or an urgent threat with a link) rather than reacting to individual words like "OTP" or "bank" that show up constantly in harmless messages too.
+
+**Edge cases** — each returns a clear result rather than crashing:
+
+| Input | Result |
+|---|---|
+| Empty / whitespace-only | `is_scam: false`, `reason: "Couldn't analyze this: no text provided."` |
+| Extremely long text | Truncated to 4000 characters, then classified normally |
+| Non-English text | `reason: "Couldn't analyze this: detected language '<code>' — this model only supports English."` |
+| Gibberish / symbols-only | `reason: "Couldn't analyze this: ..."` (caught by a letter-ratio check and a language-detection confidence threshold) |
+
+**AI Hub path:** unlike EasyOCR, this is a custom model, not one from the AI Hub model zoo, so it compiles via the raw `qai_hub` API rather than the `qai_hub_models` CLI:
+
+```bash
+python -m src.scam_detector.train_classifier      # produces the .onnx
+python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on real Snapdragon hardware
+```
+
 ## Project structure
 
 ```
@@ -22,10 +50,15 @@ NXTSight/
 │   │   ├── ocr.py           # extract_text_from_image(): screenshot -> raw text
 │   │   └── runtime.py       # picks the ONNX Runtime execution provider (NPU vs CPU)
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
+│   │   ├── data.py               # labeled training examples
+│   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
+│   │   ├── classifier.py         # classify_scam(text) -> {is_scam, confidence, reason}
+│   │   └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
 │   └── spend_categorizer/   # feature 2: transaction text parsing + spend categorization
-├── models/                  # exported/compiled model artifacts for on-device NPU inference
+├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
 ├── scripts/
-│   └── aihub_profile_easyocr.py  # one-off: profile a compiled model on real Snapdragon hardware
+│   ├── aihub_profile_easyocr.py          # one-off: profile the OCR model on real Snapdragon hardware
+│   └── aihub_compile_scam_classifier.py  # one-off: compile + profile the scam classifier for Snapdragon
 ├── data/samples/            # sample screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests
@@ -36,9 +69,9 @@ NXTSight/
 
 ## Status
 
-OCR stage (`extract_text_from_image`) and the NPU/CPU execution-provider
-auto-detect (`runtime.py`) are working. Scam classification and spend
-categorization are not implemented yet.
+OCR (`extract_text_from_image`), the NPU/CPU execution-provider auto-detect
+(`runtime.py`), and scam classification (`classify_scam`) are working. Spend
+categorization is not implemented yet.
 
 ## Setup
 
