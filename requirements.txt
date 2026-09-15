@@ -16,17 +16,17 @@ onnxruntime; sys_platform != "win32"
 onnxruntime-qnn; sys_platform == "win32"
 
 # Core numerical / data handling
-numpy
+# Pinned below 2.0: easyocr's torch build (2.2.2, the last version with
+# Intel-Mac wheels) needs the numpy 1.x ABI.
+numpy<2
 pandas
 
 # Screenshot OCR (feature 1: scam message detection from a screenshot)
 # EasyOCR is pure-Python (no system Tesseract binary required) so it runs
 # anywhere out of the box; swap for a Qualcomm AI Hub OCR model once available.
-# numpy/opencv are pinned because easyocr's torch build (2.2.2, the last
-# version with Intel-Mac wheels) needs the numpy 1.x ABI.
+# opencv is pinned to match the numpy<2 constraint above.
 pillow
 easyocr
-numpy<2
 opencv-python-headless<4.10
 
 # Text classification / lightweight local NLP (scam detection, spend categorization)

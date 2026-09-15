@@ -104,7 +104,7 @@ No manual flag to flip, and it never crashes for lacking the NPU provider. Every
 ```
 [NXTSight] Execution path: CPU (QNN execution provider not available on this machine)
 [NXTSight] ONNX Runtime providers available here: CoreMLExecutionProvider, AzureExecutionProvider, CPUExecutionProvider
-[NXTSight] Session ready on 'models/easyocr_detector.onnx' — active provider: CPUExecutionProvider
+[NXTSight] Session ready on 'models/easyocr_detector/model.onnx' — active provider: CPUExecutionProvider
 ```
 
 On the actual Snapdragon HP PC, once `onnxruntime-qnn` is installed, the same code logs `Execution path: Snapdragon NPU (ONNX Runtime QNN execution provider)` instead — nothing else changes.
