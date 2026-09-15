@@ -27,9 +27,15 @@ _top_terms = None
 
 
 def _load_top_terms():
+    """Load the reason-building vocabulary; {"scam": [], "legit": []} if it
+    can't be read — a missing/corrupted top_terms.json degrades the quality
+    of the `reason` text, it shouldn't take down classification itself."""
     global _top_terms
     if _top_terms is None:
-        _top_terms = json.loads((ARTIFACTS_DIR / "top_terms.json").read_text())
+        try:
+            _top_terms = json.loads((ARTIFACTS_DIR / "top_terms.json").read_text())
+        except Exception:
+            _top_terms = {"scam": [], "legit": []}
     return _top_terms
 
 

@@ -77,23 +77,31 @@ class NXTSightEngine:
         """Run `text` through the named task's model.
 
         Returns a plain-language reason string if the text can't be
-        analyzed at all (empty, gibberish, non-English — the same check
-        for every task), otherwise a Prediction for the task's own module
-        to interpret into its own result shape.
+        analyzed — either because it fails text_guard (empty, gibberish,
+        non-English — the same check for every task) or because the
+        task's model artifacts are missing/corrupted (a bad deploy, not
+        bad input, but the caller shouldn't crash over it either) —
+        otherwise a Prediction for the task's own module to interpret.
+
+        `task_name` itself is not validated: passing an unregistered name
+        is a programming error in our own code, not user input, so it's
+        allowed to raise KeyError loudly rather than being swallowed here.
         """
         reason = unanalyzable_reason(text)
         if reason:
             return reason
 
         task = self._tasks[task_name]
-        vectorizer, session = self._ensure_loaded(task_name)
+        try:
+            vectorizer, session = self._ensure_loaded(task_name)
+            cleaned = text.strip()[: task.max_chars]
+            vector = vectorizer.transform([cleaned]).toarray().astype(np.float32)
+            input_name = session.get_inputs()[0].name
+            labels, probabilities = session.run(["label", "probabilities"], {input_name: vector})
+        except Exception as e:
+            return f"the {task_name} model is unavailable right now ({type(e).__name__})"
 
-        cleaned = text.strip()[: task.max_chars]
-        vector = vectorizer.transform([cleaned]).toarray().astype(np.float32)
-        input_name = session.get_inputs()[0].name
-        labels, probabilities = session.run(["label", "probabilities"], {input_name: vector})
         label_id = int(labels[0])
-
         return Prediction(
             label_id=label_id,
             confidence=float(probabilities[0][label_id]),
@@ -105,10 +113,15 @@ class NXTSightEngine:
         """Tokens/n-grams `text` produces under the task's vectorizer.
 
         Used to build human-readable explanations from a model's own
-        learned vocabulary rather than a canned string.
+        learned vocabulary rather than a canned string. Returns an empty
+        set (rather than raising) if the vectorizer can't be loaded —
+        callers treat "no matched terms" as a normal, already-handled case.
         """
-        vectorizer, _ = self._ensure_loaded(task_name)
-        return set(vectorizer.build_analyzer()(text))
+        try:
+            vectorizer, _ = self._ensure_loaded(task_name)
+            return set(vectorizer.build_analyzer()(text))
+        except Exception:
+            return set()
 
 
 # One process-wide engine — every task module below registers itself with

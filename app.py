@@ -11,10 +11,42 @@ Run it with:
     streamlit run app.py
 """
 
+import sys
 import tempfile
 from pathlib import Path
 
-import streamlit as st
+from src.pipeline import preflight
+
+# Check Python itself before importing anything — a too-old interpreter
+# can fail in confusing ways deep inside a dependency rather than here.
+_version_problem = preflight.python_version_problem()
+if _version_problem:
+    print(_version_problem, file=sys.stderr)
+    raise SystemExit(1)
+
+# Streamlit itself might not be installed — without it we can't show a
+# nice on-screen error, so this one case prints to the terminal instead.
+try:
+    import streamlit as st
+except ImportError:
+    print(
+        "NXTSight requires the 'streamlit' package, which isn't installed "
+        "in this environment.\nRun:\n    pip install -r requirements.txt\n"
+        "then try again.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+_missing = preflight.missing_dependencies()
+if _missing:
+    st.set_page_config(page_title="NXTSight", layout="centered")
+    st.error(
+        "**Missing dependencies:** "
+        + ", ".join(_missing)
+        + "\n\nRun this in your terminal, then restart the app:\n\n"
+        "```\npip install -r requirements.txt\n```"
+    )
+    st.stop()
 
 # Install the network guard before importing anything that touches a
 # model — if OCR/classification ever tried to reach the network, this
@@ -98,31 +130,36 @@ with scam_tab:
                 tmp.write(uploaded.getvalue())
                 image_path = Path(tmp.name)
     else:
-        image_path = next(f for f in sample_files if f.stem == choice)
+        image_path = next((f for f in sample_files if f.stem == choice), None)
+        if image_path is None:
+            st.error(f"Sample '{choice}' is no longer available — pick another, or upload your own.")
 
     if image_path is not None:
-        st.image(str(image_path), width=320)
+        try:
+            st.image(str(image_path), width=320)
 
-        with st.spinner("Reading text from the image..."):
-            text = extract_text_from_image(str(image_path))
+            with st.spinner("Reading text from the image..."):
+                text = extract_text_from_image(str(image_path))
 
-        if text.startswith("Error"):
-            st.error(text)
-        else:
-            with st.expander("Extracted text"):
-                st.text(text)
-
-            with st.spinner("Checking for scam patterns..."):
-                result = classify_scam(text)
-
-            if result["reason"].startswith("Couldn't analyze this"):
-                st.warning(result["reason"])
-            elif result["is_scam"]:
-                st.error(f"**Likely a scam** — {result['confidence'] * 100:.0f}% confidence")
-                st.write(result["reason"])
+            if text.startswith("Error"):
+                st.error(text)
             else:
-                st.success(f"**Looks legitimate** — {result['confidence'] * 100:.0f}% confidence")
-                st.write(result["reason"])
+                with st.expander("Extracted text"):
+                    st.text(text)
+
+                with st.spinner("Checking for scam patterns..."):
+                    result = classify_scam(text)
+
+                if result["reason"].startswith("Couldn't analyze this"):
+                    st.warning(result["reason"])
+                elif result["is_scam"]:
+                    st.error(f"**Likely a scam** — {result['confidence'] * 100:.0f}% confidence")
+                    st.write(result["reason"])
+                else:
+                    st.success(f"**Looks legitimate** — {result['confidence'] * 100:.0f}% confidence")
+                    st.write(result["reason"])
+        except Exception as exc:
+            st.error(f"Couldn't process this screenshot: {exc}")
 
 with spend_tab:
     st.subheader("Spend Insight")
@@ -143,26 +180,29 @@ with spend_tab:
     )
 
     if st.button("Analyze spending", type="primary"):
-        lines = [line.strip() for line in transactions_text.split("\n") if line.strip()]
+        try:
+            lines = [line.strip() for line in transactions_text.split("\n") if line.strip()]
 
-        with st.spinner("Categorizing transactions..."):
-            result = categorize_transactions(lines)
+            with st.spinner("Categorizing transactions..."):
+                result = categorize_transactions(lines)
 
-        if result["insight"].startswith("Couldn't analyze this"):
-            st.warning(result["insight"])
-        else:
-            st.success(result["insight"])
+            if result["insight"].startswith("Couldn't analyze this"):
+                st.warning(result["insight"])
+            else:
+                st.success(result["insight"])
 
-        if result["categorized"]:
-            st.table(
-                [
-                    {
-                        "Transaction": (item["text"][:60] + "...") if len(item["text"]) > 60 else item["text"],
-                        "Category": item["category"],
-                        "Confidence": f"{item['confidence'] * 100:.0f}%",
-                        "Amount": f"₹{item['amount']:,.0f}" if item["amount"] is not None else "—",
-                        "Direction": item["direction"] or "—",
-                    }
-                    for item in result["categorized"]
-                ]
-            )
+            if result["categorized"]:
+                st.table(
+                    [
+                        {
+                            "Transaction": (item["text"][:60] + "...") if len(item["text"]) > 60 else item["text"],
+                            "Category": item["category"],
+                            "Confidence": f"{item['confidence'] * 100:.0f}%",
+                            "Amount": f"₹{item['amount']:,.0f}" if item["amount"] is not None else "—",
+                            "Direction": item["direction"] or "—",
+                        }
+                        for item in result["categorized"]
+                    ]
+                )
+        except Exception as exc:
+            st.error(f"Couldn't analyze these transactions: {exc}")

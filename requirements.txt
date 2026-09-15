@@ -1,45 +1,75 @@
 # NXTSight — on-device pipeline dependencies
 # Target runtime: Snapdragon X Elite NPU (Hexagon) via Qualcomm AI Hub / ONNX Runtime QNN EP
+#
+# Every version below is pinned exactly (captured from a real working
+# install, not guessed) so that `pip install -r requirements.txt` gives
+# everyone the same environment instead of quietly resolving to whatever
+# is newest on the day they happen to install it. If you need to bump a
+# version, do it deliberately, re-run the full test suite, and re-pin —
+# don't just delete the "==".
 
-# Qualcomm AI Hub: compile, profile, and validate models for on-device NPU execution
-qai-hub
-qai-hub-models
+# Qualcomm AI Hub: compile + profile models for on-device NPU execution
+# (used by scripts/aihub_*.py). qai-hub-models is intentionally NOT listed
+# here — it's only needed for the one optional `python -m
+# qai_hub_models.models.easyocr.export` CLI workflow (see README), and
+# pulls in plain `opencv-python`, which silently conflicts with the
+# `opencv-python-headless` that easyocr needs below (both install a `cv2`
+# package at the same path; whichever installs second wins, non-
+# deterministically). Install qai-hub-models separately only if you're
+# running that specific export command.
+qai-hub==0.55.0
 
 # On-device inference runtime. onnxruntime-qnn ships ONNX Runtime with the
 # QNN execution provider, which is how a compiled model actually reaches the
-# Snapdragon Hexagon NPU — but it only publishes Windows/Linux-ARM wheels.
-# Everywhere else (this dev Mac included) we install plain onnxruntime, and
-# src/pipeline/runtime.py auto-detects which one is present at startup and
-# falls back to the CPU provider when QNN isn't available.
-onnx<1.20  # newer onnx defaults to an IR version this onnxruntime can't load
-onnxruntime; sys_platform != "win32"
-onnxruntime-qnn; sys_platform == "win32"
+# Snapdragon Hexagon NPU — but it only publishes Windows/Linux-ARM wheels,
+# and its version numbers do NOT track plain onnxruntime's (it's on its own
+# 1.20.x/2.x line). Everywhere else (this dev Mac included) we install
+# plain onnxruntime, and src/pipeline/runtime.py auto-detects which one is
+# present at startup and falls back to the CPU provider when QNN isn't
+# available. The onnxruntime-qnn pin below is UNVERIFIED on this machine
+# (no Windows/ARM hardware to test on) — if it fails to install or import
+# on the real Snapdragon device, check https://pypi.org/project/onnxruntime-qnn/
+# for the current version list and adjust.
+onnx==1.19.1  # newer onnx defaults to an IR version this onnxruntime can't load
+onnxruntime==1.19.2; sys_platform != "win32"
+onnxruntime-qnn==1.20.0; sys_platform == "win32"
 
-# Core numerical / data handling
-# Pinned below 2.0: easyocr's torch build (2.2.2, the last version with
-# Intel-Mac wheels) needs the numpy 1.x ABI.
-numpy<2
-pandas
+# Core numerical / data handling.
+# numpy pinned below 2.0: easyocr's torch build (2.2.2, the last version
+# with Intel-Mac wheels — pinned explicitly below for the same reason, on
+# every platform, so everyone gets the version this was actually tested
+# against) needs the numpy 1.x ABI.
+numpy==1.26.4
+pandas==2.2.3
 
-# Screenshot OCR (feature 1: scam message detection from a screenshot)
+# Screenshot OCR (feature 1: scam message detection from a screenshot).
 # EasyOCR is pure-Python (no system Tesseract binary required) so it runs
-# anywhere out of the box; swap for a Qualcomm AI Hub OCR model once available.
-# opencv is pinned to match the numpy<2 constraint above.
-pillow
-easyocr
-opencv-python-headless<4.10
+# anywhere out of the box. torch/opencv pinned explicitly (not just left to
+# easyocr's own resolution) so every platform gets the exact combination
+# this was tested against, not whatever's newest that day.
+pillow==11.3.0
+easyocr==1.7.2
+torch==2.2.2
+opencv-python-headless==4.9.0.80
+joblib==1.6.0
 
-# Text classification / lightweight local NLP (scam detection, spend categorization)
-# skl2onnx exports the trained scikit-learn classifier to ONNX so it runs
-# through the same QNN-aware runtime.py as the OCR models. langdetect flags
-# non-English/gibberish input before it ever reaches the classifier.
-scikit-learn
-skl2onnx
-langdetect
+# Text classification / lightweight local NLP (scam detection, spend
+# categorization). skl2onnx exports the trained scikit-learn classifier to
+# ONNX so it runs through the same QNN-aware runtime.py as the OCR models.
+# langdetect flags non-English/gibberish input before it reaches a model.
+scikit-learn==1.9.1
+skl2onnx==1.20.0
+langdetect==1.0.9
 
 # Demo UI (app.py) — a minimal local web app, no login/accounts, so the
 # on-device pipeline can be tried live without wiring up a real phone feed.
-streamlit
+streamlit==1.63.0
+
+# TLS root certificates. Needed by EasyOCR's one-time model download and
+# by pip itself on some setups — pinned here so the macOS
+# CERTIFICATE_VERIFY_FAILED workaround in the README always has it
+# available, no separate manual install step required.
+certifi==2026.7.22
 
 # Dev tooling
-pytest
+pytest==9.1.1

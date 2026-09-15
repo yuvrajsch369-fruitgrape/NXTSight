@@ -35,9 +35,19 @@ _categories = None
 
 
 def _load_categories():
+    """Load the label_id -> category-name list, or None if it can't be read.
+
+    Unlike the scam classifier's top_terms (cosmetic), this is required to
+    turn a raw label_id into a real category name — if it's missing or
+    corrupted, _classify_one() below treats every result as unrecognized
+    rather than crashing on an out-of-range list index.
+    """
     global _categories
     if _categories is None:
-        _categories = json.loads((ARTIFACTS_DIR / "categories.json").read_text())
+        try:
+            _categories = json.loads((ARTIFACTS_DIR / "categories.json").read_text())
+        except Exception:
+            _categories = None
     return _categories
 
 
@@ -83,8 +93,13 @@ def _classify_one(raw) -> dict:
     # guess. Require an actual amount or debit/credit cue too: a real
     # transaction SMS always has at least one.
     looks_like_a_transaction = amount is not None or direction is not None
+    category_available = categories is not None and 0 <= result.label_id < len(categories)
 
-    if result.confidence < MIN_CATEGORY_CONFIDENCE or not looks_like_a_transaction:
+    if (
+        result.confidence < MIN_CATEGORY_CONFIDENCE
+        or not looks_like_a_transaction
+        or not category_available
+    ):
         item = _unrecognized_item(result.text)
         item["confidence"] = round(result.confidence, 3)
         return item

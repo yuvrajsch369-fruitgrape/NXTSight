@@ -135,7 +135,8 @@ NXTSight/
 │   │   ├── runtime.py        # picks the ONNX Runtime execution provider (NPU vs CPU)
 │   │   ├── text_guard.py     # shared "is this text analyzable" check (gibberish/non-English/empty)
 │   │   ├── engine.py         # NXTSightEngine: the one shared object both tasks call through
-│   │   └── network_guard.py  # blocks + proves-blocked any non-loopback network connection
+│   │   ├── network_guard.py  # blocks + proves-blocked any non-loopback network connection
+│   │   └── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
@@ -148,12 +149,14 @@ NXTSight/
 │       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, categories.json
 ├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
 ├── scripts/
+│   ├── check_setup.py                       # environment doctor — run before the app if unsure setup is complete
 │   ├── aihub_profile_easyocr.py             # one-off: profile the OCR model on real Snapdragon hardware
 │   ├── aihub_compile_scam_classifier.py     # one-off: compile + profile the scam classifier for Snapdragon
 │   └── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
 ├── data/samples/            # sample screenshots and sample transaction text for demos/tests
 ├── notebooks/               # exploration / model experimentation
-├── tests/                   # unit tests, incl. test_engine.py (proves the shared-object architecture)
+├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
+│                             # test_network_guard.py, test_preflight.py
 ├── assets/screenshots/      # demo screenshots for the submission write-up
 ├── requirements.txt
 └── README.md
@@ -171,14 +174,53 @@ NPU/CPU execution-provider auto-detect (`runtime.py`), scam classification
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
+python scripts/check_setup.py   # confirms Python version + every dependency is OK
 ```
+
+Every version in `requirements.txt` is pinned exactly (not left to "whatever's newest today") so this install is reproducible — see [Reliability & hardening](#reliability--hardening) below for why, and what happens if a step here goes wrong.
 
 **First run on macOS:** EasyOCR downloads its model weights the first time it runs. If you installed Python from python.org and see a `CERTIFICATE_VERIFY_FAILED` error, fix it with:
 
 ```bash
-pip install certifi
 export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
 ```
+
+## Reliability & hardening
+
+### Stress-tested, not just spot-checked
+
+The scam classifier is checked against 47 held-out examples total, none copied from training data: the original 5 scam + 5 legit ([tests/test_classifier.py](tests/test_classifier.py)) plus a larger, deliberately harder 15+15 batch covering scam sub-types the training data was originally thin on — romance/pig-butchering scams, fake tech support, fake charity, tax-refund phishing, SIM-swap, insurance renewal, fake legal threats, crypto wallet/seed-phrase phishing, WhatsApp code-forwarding, subscription-cancellation scares, fake loans/jobs/health offers — against legit messages covering school notices, appointment reminders, calendar invites, weather alerts, security "no action needed" notices, government status updates, and everyday correspondence. Current result: **47/47 correct** on this dev machine.
+
+Two real false positives turned up during this pass and got fixed at the data level, not by patching around them:
+- A legit "new sign-in, no action needed" notification was flagged as a scam — the model had only ever seen the *scam* version of that message ("if this WASN'T you, verify immediately"). Added legit examples of the passive framing.
+- A legit "your passport application is under processing" notice was flagged — official/institutional language wasn't represented on the legit side of the training data at all. Added a few.
+
+Fixing those introduced two *new* misses (a WhatsApp code-forwarding scam and a crypto-wallet phishing scam got pulled toward "legit" by vocabulary overlap with the new legit examples) — a real example of the tug-of-war a tiny linear model plays with itself. Both got fixed: tightened the new legit examples' wording to reduce overlap, and added one targeted scam example for the previously-uncovered "seed phrase" pattern. All 47 pass now, with **zero false negatives on any scam example** across both batches — when a tradeoff has to be made, this favors never missing a real scam over never annoying someone with a false alarm.
+
+### Nothing should crash the app on bad input
+
+Audited every function that runs during actual use (not the one-off build/training scripts, which are run manually offline) and fixed what could actually raise an unhandled exception:
+
+- `extract_text_from_image()` crashed on `None` or any non-path input (an unguarded `Path(path)` call) — now returns `"Error: expected a file path, got ..."`.
+- The shared engine's model loading and inference (`src/pipeline/engine.py`) weren't guarded against a missing or corrupted `.onnx`/`.joblib` artifact — a bad deploy would have crashed both `classify_scam` and `categorize_transactions`. Any such failure now returns a plain-language reason both features already know how to handle (it reuses the same "couldn't analyze this" path as gibberish/non-English input).
+- `classify_scam`'s reason-building vocabulary (`top_terms.json`) and `categorize_transactions`' category-name list (`categories.json`) are each optional now — missing or corrupted, they degrade gracefully (a shorter `reason`, or "Unrecognized" respectively) instead of crashing.
+- `app.py`'s file-upload and transaction-analysis handlers are wrapped so any unexpected exception becomes a plain `st.error(...)` message, never Streamlit's raw traceback.
+
+Proven, not just asserted — [tests/test_hardening.py](tests/test_hardening.py) feeds `None`, wrong types, a corrupted `.onnx` file, and a wildly mixed batch (`None`, numbers, nested lists, control characters, a 10,000-character string) through every entry point and checks each one comes back with a clear result instead of raising.
+
+### Pinned dependencies
+
+Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. One real cross-package conflict got caught and fixed during this pass: `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically — a genuinely "quietly breaks depending on install order" bug). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which already has its own separate install instructions above.
+
+### What happens on a different machine
+
+| Scenario | What happens |
+|---|---|
+| **Different OS** (Windows/Linux instead of this dev Mac) | All file paths use `pathlib`; the OS-specific pieces (QNN backend filename, `onnxruntime` vs `onnxruntime-qnn`) are already platform-gated in code and in `requirements.txt`. Should work as-is — not independently tested on Windows/Linux hardware, so run `python scripts/check_setup.py` first to confirm before relying on it. |
+| **Missing or incomplete `pip install`** | `app.py` checks the Python version and every required import *before* touching Streamlit's UI machinery, showing exactly which packages are missing and the fix — instead of a raw `ModuleNotFoundError` appearing mid-script. Verified by simulating a partial install (only `streamlit` present): the app showed a clean, itemized error rather than crashing. Run `python scripts/check_setup.py` standalone for the same check before even starting the app. |
+| **No internet during `pip install`** | Not something an app can fix after the fact — pip itself gives a normal, clear network error in this case. What *is* fixed: the exact pins above mean that once install succeeds, it's the same install every time, so a "worked yesterday, broke today" failure from an unrelated upstream release doesn't happen later. |
+| **Too-old Python** | `engine.py` uses `dict[str, Task]`-style type hints (PEP 585), which need Python 3.9+. Both `app.py` and `scripts/check_setup.py` check this explicitly and name the exact minimum version required, rather than failing with a cryptic `TypeError: 'type' object is not subscriptable` deep inside an import. |
+| **Fresh machine, first-ever run, wifi off** | EasyOCR needs network once to download its model weights (documented under [Live demo](#live-demo) above) — `network_guard` would (correctly) block that too. Run the app once with internet before a wifi-off presentation. |
 
 ## Snapdragon / Qualcomm AI Hub
 
@@ -187,6 +229,8 @@ There are two separate pieces here — a **build-time step** you run once, by ha
 ### 1. Build-time: compile + profile a model for Snapdragon via AI Hub
 
 This step turns a model into a `.onnx` file specifically compiled for the Snapdragon X Elite, and confirms it actually runs correctly by profiling it on real, physical Snapdragon hardware in Qualcomm's cloud device farm (not a simulator — useful since most of us don't own a Snapdragon PC to test on directly). It needs your own free AI Hub account and API token from [aihub.qualcomm.com](https://aihub.qualcomm.com); nobody else can run this step for you.
+
+`qai-hub-models` is intentionally *not* in the base `requirements.txt` — it pulls in plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path, and whichever installs second wins). Install it separately, only when you actually need this step:
 
 ```bash
 pip install qai-hub "qai-hub-models[easyocr]"

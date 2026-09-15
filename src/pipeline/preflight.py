@@ -1,0 +1,56 @@
+"""Environment preflight checks, shared by app.py and scripts/check_setup.py.
+
+Turns "silent failure on someone else's machine" into a specific,
+actionable message — which Python version is required, which package is
+missing, and the exact command to fix it — instead of a raw ImportError
+buried in a traceback, or a script that just hangs with no explanation.
+
+Only uses the standard library: this module must itself always be
+importable, even when every third-party dependency is missing, since it's
+the thing that reports that they're missing.
+"""
+
+import importlib
+import sys
+
+MIN_PYTHON = (3, 9)  # engine.py's `dict[str, Task]` needs PEP 585 (3.9+)
+
+# import name -> the pip/PyPI package name to report if it's missing
+REQUIRED_MODULES = {
+    "streamlit": "streamlit",
+    "numpy": "numpy",
+    "pandas": "pandas",
+    "PIL": "pillow",
+    "cv2": "opencv-python-headless",
+    "easyocr": "easyocr",
+    "torch": "torch",
+    "sklearn": "scikit-learn",
+    "skl2onnx": "skl2onnx",
+    "langdetect": "langdetect",
+    "onnxruntime": "onnxruntime",
+    "joblib": "joblib",
+}
+
+
+def python_version_problem():
+    """Return a message if the running Python is too old, else None."""
+    if sys.version_info < MIN_PYTHON:
+        have = f"{sys.version_info[0]}.{sys.version_info[1]}"
+        need = ".".join(str(p) for p in MIN_PYTHON)
+        return (
+            f"NXTSight requires Python {need}+ (found {have}). Install a "
+            "newer Python (python.org, or `pyenv install`) and recreate "
+            "the virtual environment: `python3 -m venv venv`."
+        )
+    return None
+
+
+def missing_dependencies() -> list:
+    """Return the pip package names for any required module that fails to import."""
+    missing = []
+    for module_name, pip_name in REQUIRED_MODULES.items():
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            missing.append(pip_name)
+    return missing

@@ -24,6 +24,7 @@ SCAM_EXAMPLES = [
     "Double your money in 7 days! Join our exclusive trading group and get guaranteed daily profits. Limited seats, DM now.",
     "Invest Rs 5,000 today and earn Rs 50,000 in one month, guaranteed. No risk, 100% return assured by our expert traders.",
     "Crypto giveaway: Send 0.1 BTC and receive 1 BTC back instantly as part of our anniversary promotion. Act fast, offer ends soon.",
+    "Your crypto exchange account requires immediate verification. Enter your wallet seed phrase at this link to avoid permanent suspension.",
     "Our AI trading bot guarantees 20% daily returns with zero risk. Thousands have already become millionaires. Start with just Rs 1000.",
     "Exclusive stock tip: This penny stock will 10x by next week. Buy now before the news breaks, guaranteed profit.",
     "Congratulations, you've been chosen for our VIP investment plan offering fixed 15% monthly returns, risk-free and government backed.",
@@ -32,6 +33,7 @@ SCAM_EXAMPLES = [
     "FedEx: We were unable to deliver your package due to an address issue. Pay a redelivery fee of $2.99 here to reschedule.",
     "Your order is stuck at the warehouse due to an unpaid handling charge. Clear the Rs 89 fee immediately to avoid return to sender.",
     "DHL Notice: Your shipment requires an import tax payment of $4.50 before it can be released. Pay online now to avoid delays.",
+    "We attempted delivery of your parcel but it is being held due to an outstanding customs duty. Settle Rs 249 within 24 hours or the item will be returned to origin.",
     # KYC phishing / fake job offers
     "Your mobile number KYC is incomplete. Update your Aadhaar and PAN details now at the link below or your SIM will be blocked.",
     "Earn Rs 3000/day working from home, no experience needed. Just pay a Rs 499 registration fee to get started today.",
@@ -58,6 +60,15 @@ LEGIT_EXAMPLES = [
     "Use 482913 as your one-time password to complete your purchase. This code expires in 10 minutes. Do not share it with anyone.",
     "Your verification code is 105774. For your security, do not share this code with anyone, even if they claim to be from our support team.",
     "OTP 990213 to reset your password. If you did not request this, please ignore this message.",
+    # Legit security notices (informational, "no action needed" — contrast
+    # with the "verify immediately or be locked out" scam framing above)
+    "A sign-in attempt was made on your account from an unfamiliar location in Chicago. If this was you, no action is needed.",
+    "We noticed a login from an unrecognized browser at 9:42 AM. If this was you, you can safely ignore this alert.",
+    "Your password was changed successfully. If you did not make this change, contact support from your account settings.",
+    # Legit official/government status updates (no ask, no link, no urgency)
+    "Your passport renewal application (file no. PP2024981) has been received and is under processing. Track status on the official portal.",
+    "Your visa application reference VA88213 has moved to the document verification stage. No action is required at this time.",
+    "Your income tax return for AY 2025-26 has been successfully e-verified. Processing typically takes 20-45 days.",
     # Personal / casual messages
     "Hey, are we still on for lunch at 1pm tomorrow? Let me know if you need to reschedule.",
     "Can you send me the notes from today's class? I missed the last 20 minutes.",

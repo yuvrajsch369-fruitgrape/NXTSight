@@ -7,6 +7,7 @@ inside extract_text_from_image() to call that instead; the function
 signature is the pipeline's stable contract, not the OCR backend.
 """
 
+import os
 from pathlib import Path
 
 import easyocr
@@ -22,7 +23,10 @@ def _get_reader():
     return _reader
 
 
-def extract_text_from_image(path: str) -> str:
+def extract_text_from_image(path) -> str:
+    if not isinstance(path, (str, os.PathLike)):
+        return f"Error: expected a file path, got {type(path).__name__}"
+
     if not Path(path).is_file():
         return f"Error: no image found at '{path}'"
 
