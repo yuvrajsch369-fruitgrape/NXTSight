@@ -1,11 +1,12 @@
 """NXTSight demo UI.
 
 A minimal local web app so the on-device pipeline can be tried live: drop
-a screenshot and see the scam verdict, or paste transaction text and see
-it categorized with an insight. No login, no accounts, nothing that talks
-to a server outside this machine — every prediction below runs through
-the same NXTSightEngine (src/pipeline/engine.py) used by the CLI and the
-test suite.
+a screenshot and see the scam verdict, paste transaction text (or scan a
+receipt/bill screenshot) and see it categorized with an insight, or paste
+a call transcript / upload a recording and check it for scam-call
+patterns. No login, no accounts, nothing that talks to a server outside
+this machine — every prediction below runs through the same
+NXTSightEngine (src/pipeline/engine.py) used by the CLI and the test suite.
 
 Run it with:
     streamlit run app.py
@@ -56,6 +57,7 @@ from src.pipeline import network_guard
 
 network_guard.install()
 
+from src.call_shield.classifier import analyze_call, analyze_call_recording
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
@@ -63,6 +65,47 @@ from src.spend_categorizer.categorizer import categorize_transactions
 from src.spend_categorizer.receipt_parser import process_receipt_screenshot
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "data" / "samples"
+
+CALL_TRANSCRIPT_SAMPLES = {
+    "Digital-arrest scam": """Caller: Namaste, I am Sub-Inspector Verma calling from the Cyber Crime Investigation Unit.
+You: Yes, what is this regarding?
+Caller: Your PAN card has been used to open a bank account involved in a 2 crore rupee money laundering racket linked to human trafficking. There is a digital arrest warrant against your name.
+You: This can't be right, I've never opened any such account.
+Caller: The evidence is very clear on our end. You must not disconnect this call or leave your house. Keep your camera on for the remainder of this investigation.
+You: Okay, I'm scared, what do I do?
+Caller: To prove you are not involved, transfer all funds from your savings account to the RBI secure holding account we provide for verification within the next hour, and read out the OTP the moment it arrives. Failing to comply means a police team arrives at your address immediately.""",
+    "Fake courier scam": """Caller: Hello, this is DHL express calling about a parcel booked under your name that has been stopped at Chennai customs.
+You: I don't remember ordering anything from abroad.
+Caller: The parcel contains an international SIM card and some banned cosmetic items, which is a customs violation. A case file has already been opened against your identity.
+You: What happens now?
+Caller: To close the case and release the parcel, you need to pay a customs penalty of 3200 rupees right now through the payment link, and confirm the OTP you receive so we can verify the transaction went through before the 20 minute deadline, otherwise this gets escalated to the cyber cell.""",
+    "Fake bank scam": """Caller: Good evening, this is calling from the fraud prevention department of your bank.
+You: Okay, is something wrong?
+Caller: We've blocked a suspicious transaction of 78,000 rupees attempted from your account a few minutes ago from a different city.
+You: I didn't make that transaction.
+Caller: That's exactly why we're calling, to help you cancel it before it processes. Please read out the one time password sent to your registered number right now so I can reverse the transaction on my end before the 5 minute window closes, or the amount will be deducted permanently.""",
+    "Legit bank call": """Caller: Hi, this is calling from your bank regarding the credit card limit increase you requested through the app last week.
+You: Oh right, has it been approved?
+Caller: Yes, it's been approved and will reflect in your account within 2 business days. Is there anything else I can help you with?
+You: No, that's all, thank you.
+Caller: You're welcome, have a great day.""",
+    "Legit friend call": """Caller: Hey, it's Ankit, are you around this weekend?
+You: Yeah, I should be free Saturday, why what's up?
+Caller: A few of us are planning to go hiking near Lonavala, thought you might want to join.
+You: That sounds great, count me in. What time are we leaving?
+Caller: Probably 6 AM from my place, I'll send the details on the group chat.""",
+}
+
+
+def _render_call_verdict(result):
+    if result["reason"].startswith("Couldn't analyze this"):
+        st.warning(result["reason"])
+    elif result["is_scam"]:
+        st.error(f"**Likely a scam call** — {result['confidence'] * 100:.0f}% confidence")
+        st.write(result["reason"])
+    else:
+        st.success(f"**Looks like a legitimate call** — {result['confidence'] * 100:.0f}% confidence")
+        st.write(result["reason"])
 
 SAMPLE_TRANSACTIONS = """Rs 450.00 debited from A/c XX1234 on 12-Sep-25 at SWIGGY BANGALORE. Avl Bal Rs 12,340.50
 Rs 3,499.00 debited from A/c XX1234 at AMAZON on 12-Sep-25. Avl Bal Rs 11,200.
@@ -115,8 +158,8 @@ st.warning(
 if "screenshot_transactions" not in st.session_state:
     st.session_state.screenshot_transactions = []
 
-scam_tab, spend_tab, receipt_tab = st.tabs(
-    ["Scam Screenshot Scanner", "Spend Insight", "Receipt / Bill Scanner"]
+scam_tab, spend_tab, receipt_tab, call_tab = st.tabs(
+    ["Scam Screenshot Scanner", "Spend Insight", "Receipt / Bill Scanner", "Call Shield"]
 )
 
 with scam_tab:
@@ -290,3 +333,85 @@ with receipt_tab:
                     st.rerun()
         except Exception as exc:
             st.error(f"Couldn't process this image: {exc}")
+
+with call_tab:
+    st.subheader("Call Shield")
+    st.warning(
+        "**This analyzes a transcript, not a live call.** NXTSight cannot intercept or listen to an "
+        "actual phone call — that would require phone/telephony-level integration (call-audio access, "
+        "a dialer or carrier hook) far beyond a local app's scope, and beyond what this prototype does. "
+        "What it *can* do: analyze a pasted transcript, or a recording transcribed on-device first."
+    )
+    st.write(
+        "Looks for patterns specific to India's call-fraud landscape: impersonating a bank, police, or "
+        "courier service; manufactured urgency; threats of arrest or legal action; requests for an OTP "
+        "or a money transfer."
+    )
+
+    call_input_mode = st.radio(
+        "Call input", ["Paste transcript", "Upload recording (WAV)"], horizontal=True, label_visibility="collapsed"
+    )
+
+    if call_input_mode == "Paste transcript":
+        if "call_transcript_text" not in st.session_state:
+            st.session_state.call_transcript_text = ""
+
+        sample_pick_col, sample_button_col = st.columns([3, 1])
+        sample_pick = sample_pick_col.selectbox(
+            "Sample transcript", list(CALL_TRANSCRIPT_SAMPLES.keys()), label_visibility="collapsed"
+        )
+        if sample_button_col.button("Load sample"):
+            st.session_state.call_transcript_text = CALL_TRANSCRIPT_SAMPLES[sample_pick]
+
+        transcript_text = st.text_area(
+            "Call transcript",
+            key="call_transcript_text",
+            height=220,
+            label_visibility="collapsed",
+            placeholder="Paste a call transcript here...",
+        )
+
+        if st.button("Analyze call", type="primary"):
+            try:
+                with st.spinner("Checking for scam-call patterns..."):
+                    call_result = analyze_call(transcript_text)
+                _render_call_verdict(call_result)
+            except Exception as exc:
+                st.error(f"Couldn't analyze this transcript: {exc}")
+
+    else:
+        call_sample_files = sorted(SAMPLES_DIR.glob("call_*.wav")) if SAMPLES_DIR.exists() else []
+        call_sample_names = ["Upload my own"] + [f.stem for f in call_sample_files]
+        call_choice = st.radio(
+            "Recording source", call_sample_names, horizontal=True, label_visibility="collapsed"
+        )
+
+        call_audio_path = None
+        if call_choice == "Upload my own":
+            call_uploaded = st.file_uploader(
+                "Call recording", type=["wav"], label_visibility="collapsed", key="call_uploader"
+            )
+            if call_uploaded is not None:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(call_uploaded.getvalue())
+                    call_audio_path = Path(tmp.name)
+        else:
+            call_audio_path = next((f for f in call_sample_files if f.stem == call_choice), None)
+            if call_audio_path is None:
+                st.error(f"Sample '{call_choice}' is no longer available — pick another, or upload your own.")
+
+        if call_audio_path is not None:
+            try:
+                st.audio(str(call_audio_path))
+
+                with st.spinner("Transcribing on-device (Whisper) and checking for scam-call patterns..."):
+                    call_result = analyze_call_recording(str(call_audio_path))
+
+                if not call_result["ok"]:
+                    st.warning(call_result["message"])
+                else:
+                    with st.expander("Transcript"):
+                        st.text(call_result["transcript"])
+                    _render_call_verdict(call_result)
+            except Exception as exc:
+                st.error(f"Couldn't process this recording: {exc}")

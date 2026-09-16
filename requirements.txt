@@ -61,6 +61,25 @@ scikit-learn==1.9.1
 skl2onnx==1.20.0
 langdetect==1.0.9
 
+# Call Shield speech-to-text (feature 4: scam-call detection from an
+# uploaded recording). Whisper's own audio loader shells out to a system
+# `ffmpeg` binary for most formats, which isn't installed on every machine
+# (this dev Mac included, no Homebrew either) — so src/pipeline/stt.py
+# decodes WAV files itself (stdlib `wave` + numpy, already a dependency
+# above) and only uses Whisper for the actual transcription, sidestepping
+# the ffmpeg dependency entirely. Already reuses torch, pinned above.
+#
+# numba is pinned explicitly even though we never import it ourselves:
+# openai-whisper depends on it with NO version constraint at all, so pip
+# picks whatever's newest — which pulls in a newer llvmlite than 0.43.0,
+# the last version with an Intel-Mac wheel (same story as the torch pin
+# above). Without this pin, `pip install -r requirements.txt` tries to
+# compile llvmlite from source on Intel Macs and fails outright unless a
+# full LLVM toolchain happens to be installed. Confirmed reproducible on a
+# genuinely clean venv, not a one-off — this isn't hypothetical.
+numba==0.60.0
+openai-whisper==20250625
+
 # Demo UI (app.py) — a minimal local web app, no login/accounts, so the
 # on-device pipeline can be tried live without wiring up a real phone feed.
 streamlit==1.63.0

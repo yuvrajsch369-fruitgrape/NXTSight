@@ -2,10 +2,12 @@
 
 Built for the Snapdragon AI Lab Build & Present Challenge.
 
-NXTSight is a small on-device app with two features that share one pipeline:
+NXTSight is a small on-device app with four features that share one pipeline:
 
 1. **Scam Screenshot Scanner** — point it at a screenshot of a suspicious text/WhatsApp/email message and it flags whether the message looks like a financial scam.
 2. **Spend Insight** — feed it bank/UPI transaction text and it categorizes the spending and gives a plain-language insight (e.g. "your top spending category was Food & Dining, 24% of total spend").
+3. **Receipt / Bill Scanner** — scan a payment confirmation, printed receipt, or bill screenshot and add it straight into Spend Insight, tagged separately from SMS-derived entries.
+4. **Call Shield** — paste a call transcript, or upload a WAV recording to transcribe on-device first, and it flags scam-call patterns specific to India's fraud landscape (bank/police/courier impersonation, digital-arrest threats, OTP/money-transfer demands) — explicitly a transcript-analysis demo, not live call interception (see [Call Shield](#call-shield) below for why).
 
 Everything runs **fully locally** — no cloud calls, no account, no data leaving the machine. That claim is demonstrable, not just asserted: the app proves it live, every time it starts (see [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) below).
 
@@ -36,10 +38,12 @@ Then run the app:
 streamlit run app.py
 ```
 
-This opens a local web page in your browser (usually `http://localhost:8501`). Two tabs, both pre-loaded with sample data so there's nothing to hunt for:
+This opens a local web page in your browser (usually `http://localhost:8501`). Four tabs, all pre-loaded with sample data so there's nothing to hunt for:
 
 - **Scam Screenshot Scanner** — click one of the three sample screenshots already selectable on screen (`scam_bank_kyc_alert`, `scam_lottery_win`, `scam_parcel_customs_fee`), or upload your own PNG/JPG. It reads the text out of the image, then flags it as a scam or not with a confidence score and a plain-language reason.
 - **Spend Insight** — click **"Load sample transactions"** to fill the box with 8 realistic bank/UPI SMS messages, then **"Analyze spending"**. Each transaction gets categorized with an amount and direction, and you get one summary sentence across all of them.
+- **Receipt / Bill Scanner** — click a sample receipt screenshot, review the extracted merchant/amount/date, then **"Add to Spend Insight"** to fold it into the same summary, tagged "From screenshot".
+- **Call Shield** — paste a sample call transcript (or upload a sample WAV recording) and click **"Analyze call"** to check it for scam-call patterns, with the specific line that triggered the verdict quoted back to you.
 
 No login. No account. No setup beyond the commands above. If anything about your environment is incomplete, `check_setup.py` (or the app itself) tells you exactly what's missing and how to fix it — it won't fail with a cryptic error partway through.
 
@@ -62,6 +66,8 @@ Described honestly, matched to what's actually wired up right now — not what's
 
 **Screenshot OCR does not run through that path yet.** `extract_text_from_image()` currently uses EasyOCR's own PyTorch-based reader, which always runs on CPU regardless of hardware. Separately, we compiled the underlying EasyOCR detector and recognizer models for the Snapdragon X Elite via Qualcomm AI Hub and profiled them on **real physical Snapdragon hardware** in Qualcomm's cloud device farm — genuine measured numbers, not estimates: **38.1ms** (detector) and **20.4ms** (recognizer), see [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) below. That proves the OCR stage *can* run at NPU speed. Wiring that compiled model into the live `extract_text_from_image()` call — replacing EasyOCR's own PyTorch path — is the next integration step, not something already running in the demo. We're telling you this plainly rather than letting the README imply otherwise.
 
+**Call Shield's classifier is on the Snapdragon-aware path; its speech-to-text step isn't.** `analyze_call()` registers as a Task on the same shared engine as the other two classifiers, so it gets the NPU/CPU auto-detect for free. The transcription step ahead of it (`extract_text_from_audio()`, [src/pipeline/stt.py](src/pipeline/stt.py)) runs Whisper via plain PyTorch on CPU — Qualcomm AI Hub does have Whisper models in its zoo, but compiling and wiring one in is future work, not done here.
+
 ## Sample inputs to try
 
 Already bundled in the repo — no need to find your own test data:
@@ -77,12 +83,17 @@ Already bundled in the repo — no need to find your own test data:
 | Receipt / Bill Scanner | [`data/samples/receipt_multi_item_bill.png`](data/samples/receipt_multi_item_bill.png) | A restaurant bill with subtotal/tax/service-charge decoys, to test picking the *real* total |
 | Receipt / Bill Scanner | [`data/samples/receipt_blurry_photo.png`](data/samples/receipt_blurry_photo.png) | A heavily blurred photo — the "this should fail cleanly, not guess" case |
 | Receipt / Bill Scanner | [`data/samples/receipt_handwritten_note.png`](data/samples/receipt_handwritten_note.png) | A handwritten IOU note — the other "should fail cleanly" case |
+| Call Shield | built into `app.py` (5 sample transcripts) | 3 scam calls (digital-arrest, fake courier, fake bank) + 2 legit calls, pasteable with one click |
+| Call Shield | [`data/samples/call_digital_arrest_scam.wav`](data/samples/call_digital_arrest_scam.wav) | Spoken digital-arrest scam, synthesized audio, run through real on-device speech-to-text |
+| Call Shield | [`data/samples/call_fake_courier_scam.wav`](data/samples/call_fake_courier_scam.wav) | Spoken fake-courier scam |
+| Call Shield | [`data/samples/call_fake_bank_scam.wav`](data/samples/call_fake_bank_scam.wav) | Spoken fake-bank scam |
+| Call Shield | [`data/samples/call_legit_bank_call.wav`](data/samples/call_legit_bank_call.wav) | Spoken legitimate bank call |
 
-Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box; the receipt scanner accepts any payment confirmation, receipt, or bill screenshot.
+Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box; the receipt scanner accepts any payment confirmation, receipt, or bill screenshot; Call Shield accepts a pasted transcript or a WAV recording.
 
-## Architecture: one engine, two jobs
+## Architecture: one engine, three jobs
 
-`classify_scam()` and `categorize_transactions()` don't each load a model and run inference themselves. They both call through **one shared `NXTSightEngine` object** ([src/pipeline/engine.py](src/pipeline/engine.py)) — the only piece of code in the whole app that ever touches ONNX Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. What's different per feature is registered as a `Task` (its own trained artifacts, its own confidence rules) — not a second copy of the model-serving code.
+`classify_scam()`, `categorize_transactions()`, and `analyze_call()` don't each load a model and run inference themselves. All three call through **one shared `NXTSightEngine` object** ([src/pipeline/engine.py](src/pipeline/engine.py)) — the only piece of code in the whole app that ever touches ONNX Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. What's different per feature is registered as a `Task` (its own trained artifacts, its own confidence rules) — not a second copy of the model-serving code. The diagram below shows two of the three (the pattern for `analyze_call()` — [src/call_shield/classifier.py](src/call_shield/classifier.py) — is identical, just a third `Task` alongside the other two, trained on call-transcript data instead of SMS or receipt-derived text).
 
 ```
                          ┌───────────────────────────────────────┐
@@ -112,15 +123,15 @@ Want to try your own? The scam scanner accepts any screenshot with legible text;
         → {is_scam, confidence, reason}                 → {categorized, insight}
 ```
 
-Each task still trains its **own** model — a binary scam flag and an 11-way spending category are genuinely different problems, so faking one shared set of weights would just be a worse model for both jobs. What's genuinely shared, end to end, is the serving code: text validation, vectorization, session creation, NPU/CPU detection, session caching. That's the part that actually runs on-device, and it's one object doing it for both features.
+Each task still trains its **own** model — a binary scam flag, an 11-way spending category, and a binary scam-call flag are genuinely different problems (call transcripts especially: multi-turn dialogue, much longer, different vocabulary entirely from a single SMS), so faking one shared set of weights would just be a worse model for every job. What's genuinely shared, end to end, is the serving code: text validation, vectorization, session creation, NPU/CPU detection, session caching. That's the part that actually runs on-device, and it's one object doing it for all three features.
 
-Screenshot OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py)) is the "read" step ahead of the scam classifier — it turns an image into text, which then goes through the engine like any other input. As noted above, OCR itself doesn't yet run through this engine's QNN-aware path; the other two features do.
+Screenshot OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py)) and call-audio transcription ([`src/pipeline/stt.py`](src/pipeline/stt.py)) are the "read" steps ahead of the classifiers — they turn an image or a recording into text, which then goes through the engine like any other input. As noted above, neither runs through this engine's QNN-aware path yet; the three classifiers do.
 
 ## Scam classifier
 
 `classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/scam_detector/classifier.py](src/scam_detector/classifier.py)) looks for the patterns behind fake bank alerts, OTP-sharing requests, too-good-to-be-true investment offers, urgent account-blocked threats, and fake delivery/KYC/job-offer scams.
 
-**The model:** a TF-IDF + Logistic Regression classifier trained on 68 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-two-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
+**The model:** a TF-IDF + Logistic Regression classifier trained on 68 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-three-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
 
 ```bash
 python -m src.scam_detector.train_classifier
@@ -150,7 +161,7 @@ python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on r
 
 `categorize_transactions(list_of_texts) -> {"categorized": [...], "insight": str}` ([src/spend_categorizer/categorizer.py](src/spend_categorizer/categorizer.py)) takes a batch of bank/UPI transaction SMS text and sorts each into one of 11 categories (Food & Dining, Groceries, Shopping, Transport, Bills & Utilities, Entertainment, Transfers & UPI P2P, Income & Refunds, Healthcare, Investment & Savings, Cash Withdrawal), then produces one plain-language spending insight across the batch.
 
-**Calls through the same shared `NXTSightEngine`** as the scam classifier (see [Architecture](#architecture-one-engine-two-jobs) above) — TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, registered as its own Task. This module never imports `onnxruntime` or `joblib` directly; every model-serving line (text validation, vectorization, NPU/CPU session creation) lives once, in the engine, not once per feature. Retrain it with:
+**Calls through the same shared `NXTSightEngine`** as the scam classifier (see [Architecture](#architecture-one-engine-three-jobs) above) — TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, registered as its own Task. This module never imports `onnxruntime` or `joblib` directly; every model-serving line (text validation, vectorization, NPU/CPU session creation) lives once, in the engine, not once per feature. Retrain it with:
 
 ```bash
 python -m src.spend_categorizer.train_classifier
@@ -200,6 +211,37 @@ Two genuine, unresolved limitations, not glossed over: **decimal cents can be si
 
 **In the demo UI:** the **Receipt / Bill Scanner** tab shows the extracted merchant/amount/date (or the decline message) and an **Add to Spend Insight** button. Added items show up in the **Spend Insight** tab's results table with a **Source** column reading "From SMS" or "From screenshot," and the top-line insight sentence includes them in the same total.
 
+## Call Shield
+
+**This is a transcript-analysis demo, not live call interception — said plainly, in the UI and here.** NXTSight cannot listen to or intercept an actual phone call. Doing that would require phone/telephony-level OS integration — call-audio access, a dialer or carrier hook — that a local Python app fundamentally cannot do and this prototype does not attempt. What Call Shield actually does: analyze a **transcript**, either pasted directly or produced by transcribing an **uploaded recording** on-device first. The Call Shield tab carries this same disclaimer as a persistent, visible banner, not a footnote.
+
+`analyze_call(transcript) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/call_shield/classifier.py](src/call_shield/classifier.py)) — same result shape as `classify_scam()`, registered as its own Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-three-jobs) above). Its own model, not a reuse of the SMS classifier's weights: a call transcript is multi-turn dialogue, much longer than a single message, and carries vocabulary specific to India's call-fraud landscape (digital-arrest threats, "stay on video call," police/CBI/customs impersonation) that isn't represented in SMS training data at all — trained on 30 labeled call-transcript examples ([src/call_shield/data.py](src/call_shield/data.py)).
+
+**The `reason` cites which part of the call triggered it, not just which words.** A transcript is long enough that "contains scam phrases" alone isn't actionable — `analyze_call()` scores every line of the transcript against the model's own learned vocabulary and quotes the single line with the strongest match, e.g. *`Flagged because of this part of the call: "Caller: ...transfer all funds from your savings account to the RBI secure holding account..." — contains phrases commonly seen in scam calls: 'otp', 'account', 'verification'.`*
+
+**Speech-to-text** (`extract_text_from_audio()`, [src/pipeline/stt.py](src/pipeline/stt.py)) runs OpenAI's Whisper (`tiny.en`) fully on-device via PyTorch — WAV only, deliberately. Whisper's own audio loader shells out to a system `ffmpeg` binary for other formats, which isn't installed on every machine (this dev Mac included, no Homebrew either); rather than adding that dependency, WAV files are decoded with the standard-library `wave` module and resampled to 16kHz with plain numpy, so the only new dependency is Whisper itself. Retrain the classifier with `python -m src.call_shield.train_classifier`.
+
+**Tested against 5 held-out call transcripts** (3 scam: digital-arrest, fake courier, fake bank; 2 legit — none copied from training data) **and the 4 bundled sample recordings, transcribed for real, not just pasted as text.** Locked in as regression tests in [tests/test_call_shield.py](tests/test_call_shield.py) and [tests/test_stt.py](tests/test_stt.py):
+
+| Test | Result |
+|---|---|
+| Digital-arrest scam (pasted + as spoken audio) | ✅ Flagged, ~71–78% confidence, correct triggering line quoted |
+| Fake courier scam (pasted + as spoken audio) | ✅ Flagged, ~72–77% confidence |
+| Fake bank scam (pasted + as spoken audio) | ✅ Flagged, ~65–73% confidence |
+| Legit bank call (pasted + as spoken audio) | ✅ Cleared, ~67–76% confidence |
+| Legit friend call (pasted) | ✅ Cleared, 72% confidence |
+
+**A real bug this testing surfaced, not just a clean result to report:** the legit bank-call transcript, pasted with `"Caller:"/"You:"` speaker labels, correctly cleared at 67% confidence. The *identical content*, spoken as natural continuous audio and transcribed by Whisper — which produces flat, unlabeled text, since there's no speaker diarization — initially **false-positived as a scam at 51% confidence**, right at the decision boundary. Real transcribed-call text doesn't carry dialogue labels; the training data, originally written entirely in labeled-script style, didn't have examples of that shape on the legit side. Fixed at the data level: added a handful of unlabeled, continuous-text training examples (both scam and legit) matching what real transcribed audio actually looks like, then retrained. All 9 held-out checks (5 pasted + 4 audio) pass afterward, with meaningfully higher, more decisive confidence across the board (legit bank call moved from 51% to 76%) — not just barely over the line.
+
+**A real dependency-install bug this testing surfaced too:** `openai-whisper` declares its `numba` dependency with **no version constraint at all**, so a fresh `pip install` picks whichever numba is newest — which needs a newer `llvmlite` than 0.43.0, the last version with an Intel-Mac wheel (the exact same pattern as the `torch` pin elsewhere in this file). Without an explicit pin, installing on an Intel Mac tries to compile `llvmlite` from source and fails outright unless a full LLVM toolchain happens to be present. Confirmed reproducible on a clean venv twice, not a one-off flake — see the `numba==0.60.0` pin and comment in [requirements.txt](requirements.txt).
+
+**AI Hub path** (same shape as the other two custom classifiers):
+
+```bash
+python -m src.call_shield.train_classifier          # produces the .onnx
+python scripts/aihub_compile_call_shield.py           # compiles + profiles it on real Snapdragon hardware
+```
+
 ## Project structure
 
 ```
@@ -211,30 +253,37 @@ NXTSight/
 │   │   ├── ocr.py            # extract_text_from_image(): screenshot -> raw text
 │   │   ├── runtime.py        # picks the ONNX Runtime execution provider (NPU vs CPU)
 │   │   ├── text_guard.py     # shared "is this text analyzable" check (gibberish/non-English/empty)
-│   │   ├── engine.py         # NXTSightEngine: the one shared object both tasks call through
+│   │   ├── engine.py         # NXTSightEngine: the one shared object all three tasks call through
 │   │   ├── network_guard.py  # blocks + proves-blocked any non-loopback network connection
-│   │   └── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
+│   │   ├── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
+│   │   └── stt.py            # extract_text_from_audio(): WAV recording -> raw text (Whisper, ffmpeg-free)
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
 │   │   ├── classifier.py         # classify_scam(text) -> {is_scam, confidence, reason}
 │   │   └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
-│   └── spend_categorizer/   # feature 2: transaction parsing + spend categorization (SMS and screenshots)
-│       ├── data.py               # labeled training examples (11 categories)
+│   ├── spend_categorizer/   # feature 2 & 3: transaction parsing + spend categorization (SMS and screenshots)
+│   │   ├── data.py               # labeled training examples (11 categories)
+│   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
+│   │   ├── categorizer.py        # categorize_transactions(texts) -> {categorized, insight}
+│   │   ├── receipt_parser.py     # process_receipt_screenshot(): receipt/bill image -> categorize_transactions() input
+│   │   └── artifacts/            # trained vectorizer.joblib, classifier.onnx, categories.json
+│   └── call_shield/         # feature 4: scam-call detection from a transcript or recording
+│       ├── data.py               # labeled call-transcript training examples
 │       ├── train_classifier.py   # local build step: trains + exports classifier.onnx
-│       ├── categorizer.py        # categorize_transactions(texts) -> {categorized, insight}
-│       ├── receipt_parser.py     # process_receipt_screenshot(): receipt/bill image -> categorize_transactions() input
-│       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, categories.json
+│       ├── classifier.py         # analyze_call(transcript) / analyze_call_recording(wav_path)
+│       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
 ├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
 ├── scripts/
 │   ├── check_setup.py                       # environment doctor — run before the app if unsure setup is complete
 │   ├── aihub_profile_easyocr.py             # one-off: profile the OCR model on real Snapdragon hardware
 │   ├── aihub_compile_scam_classifier.py     # one-off: compile + profile the scam classifier for Snapdragon
-│   └── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
-├── data/samples/            # sample scam/receipt screenshots and sample transaction text for demos/tests
+│   ├── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
+│   └── aihub_compile_call_shield.py         # one-off: compile + profile the Call Shield classifier for Snapdragon
+├── data/samples/            # sample scam/receipt screenshots, sample call recordings, sample transaction text
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
-│                             # test_network_guard.py, test_preflight.py
+│                             # test_network_guard.py, test_preflight.py, test_call_shield.py, test_stt.py
 ├── assets/screenshots/      # demo screenshots for the submission write-up
 ├── requirements.txt
 └── README.md
@@ -265,7 +314,9 @@ Proven, not just asserted — [tests/test_hardening.py](tests/test_hardening.py)
 
 ### Pinned dependencies
 
-Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. One real cross-package conflict got caught and fixed during this pass: `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically — a genuinely "quietly breaks depending on install order" bug). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which has its own separate install instructions below.
+Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. Two real cross-package/platform bugs got caught and fixed this way, not just theorized about:
+- `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which has its own separate install instructions below.
+- `openai-whisper` declares its `numba` dependency with **no version constraint at all**, so pip picks whichever is newest — which needs a newer `llvmlite` than 0.43.0, the last version with an Intel-Mac wheel. Without an explicit pin, a clean install on an Intel Mac tries to compile `llvmlite` from source and fails outright. Reproduced twice on a genuinely fresh venv before fixing it with an explicit `numba==0.60.0` pin — see [Call Shield](#call-shield) above for the full story.
 
 ### What happens on a different machine
 
@@ -275,7 +326,7 @@ Every package in `requirements.txt` is pinned to an exact version captured from 
 | **Missing or incomplete `pip install`** | `app.py` checks the Python version and every required import *before* touching Streamlit's UI machinery, showing exactly which packages are missing and the fix — instead of a raw `ModuleNotFoundError` appearing mid-script. Verified by simulating a partial install (only `streamlit` present): the app showed a clean, itemized error rather than crashing. Run `python scripts/check_setup.py` standalone for the same check before even starting the app. |
 | **No internet during `pip install`** | Not something an app can fix after the fact — pip itself gives a normal, clear network error in this case. What *is* fixed: the exact pins above mean that once install succeeds, it's the same install every time, so a "worked yesterday, broke today" failure from an unrelated upstream release doesn't happen later. |
 | **Too-old Python** | `engine.py` uses `dict[str, Task]`-style type hints (PEP 585), which need Python 3.9+. Both `app.py` and `scripts/check_setup.py` check this explicitly and name the exact minimum version required, rather than failing with a cryptic `TypeError: 'type' object is not subscriptable` deep inside an import. |
-| **Fresh machine, first-ever run, wifi off** | EasyOCR needs network once to download its model weights (documented under [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above) — `network_guard` would (correctly) block that too. Run the app once with internet before a wifi-off presentation. |
+| **Fresh machine, first-ever run, wifi off** | Both EasyOCR and Whisper need network once to download their model weights (documented under [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above) — `network_guard` would (correctly) block that too. Run the app once with internet before a wifi-off presentation. |
 
 ## Snapdragon / Qualcomm AI Hub
 
@@ -318,4 +369,4 @@ Both models load and report their expected shapes locally through `runtime.py` �
 
 ## Status
 
-All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), and receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source). The scam and spend classifiers run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR runs on CPU today, with its Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 101 tests, all passing, verified on a from-scratch install.
+All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), and scam-call detection (`analyze_call` / `analyze_call_recording`). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR and speech-to-text run on CPU today, with OCR's Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 127 tests, all passing, verified on a from-scratch install.
