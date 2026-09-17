@@ -2,12 +2,13 @@
 
 Built for the Snapdragon AI Lab Build & Present Challenge.
 
-NXTSight is a small on-device app with four features that share one pipeline:
+NXTSight is a small on-device app with five features that share one pipeline:
 
 1. **Scam Screenshot Scanner** — point it at a screenshot of a suspicious text/WhatsApp/email message and it flags whether the message looks like a financial scam.
 2. **Spend Insight** — feed it bank/UPI transaction text and it categorizes the spending and gives a plain-language insight (e.g. "your top spending category was Food & Dining, 24% of total spend").
 3. **Receipt / Bill Scanner** — scan a payment confirmation, printed receipt, or bill screenshot and add it straight into Spend Insight, tagged separately from SMS-derived entries.
-4. **Call Shield** — paste a call transcript, or upload a WAV recording to transcribe on-device first, and it flags scam-call patterns specific to India's fraud landscape (bank/police/courier impersonation, digital-arrest threats, OTP/money-transfer demands) — explicitly a transcript-analysis demo, not live call interception (see [Call Shield](#call-shield) below for why).
+4. **Call Shield** — record a call live through your microphone, paste a call transcript, or upload a WAV recording, and it flags scam-call patterns specific to India's fraud landscape (bank/police/courier impersonation, digital-arrest threats, OTP/money-transfer demands) — genuinely live microphone capture and on-device transcription, but still not telephony-level call interception (see [Call Shield](#call-shield) below for the distinction).
+5. **Payment Pause** — ties the two scam-detection features together: if Scam Screenshot Scanner or Call Shield flagged something recently, a simulated payment attempt runs automatically a few seconds later — no click needed — and gets paused with what was flagged, when, and why, before letting you proceed or cancel — explicitly a simulated payment screen, not real payment-app interception (see [Payment Pause](#payment-pause) below for why).
 
 Everything runs **fully locally** — no cloud calls, no account, no data leaving the machine. That claim is demonstrable, not just asserted: the app proves it live, every time it starts (see [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) below).
 
@@ -38,12 +39,13 @@ Then run the app:
 streamlit run app.py
 ```
 
-This opens a local web page in your browser (usually `http://localhost:8501`). Four tabs, all pre-loaded with sample data so there's nothing to hunt for:
+This opens a local web page in your browser (usually `http://localhost:8501`). Five tabs, all pre-loaded with sample data so there's nothing to hunt for:
 
 - **Scam Screenshot Scanner** — click one of the three sample screenshots already selectable on screen (`scam_bank_kyc_alert`, `scam_lottery_win`, `scam_parcel_customs_fee`), or upload your own PNG/JPG. It reads the text out of the image, then flags it as a scam or not with a confidence score and a plain-language reason.
 - **Spend Insight** — click **"Load sample transactions"** to fill the box with 8 realistic bank/UPI SMS messages, then **"Analyze spending"**. Each transaction gets categorized with an amount and direction, and you get one summary sentence across all of them.
 - **Receipt / Bill Scanner** — click a sample receipt screenshot, review the extracted merchant/amount/date, then **"Add to Spend Insight"** to fold it into the same summary, tagged "From screenshot".
-- **Call Shield** — paste a sample call transcript (or upload a sample WAV recording) and click **"Analyze call"** to check it for scam-call patterns, with the specific line that triggered the verdict quoted back to you.
+- **Call Shield** — click the microphone and play a call on speakerphone (or just speak it) for a genuinely live check, or paste a sample call transcript / upload a sample WAV recording and click **"Analyze call"** — either way you get scam-call patterns flagged, with the specific line that triggered the verdict quoted back to you.
+- **Payment Pause** — after flagging something scammy in either of the two tabs above, open this tab: a simulated payment attempt runs on its own a few seconds later (no click needed) and shows the interruption — what was flagged, when, and why, with the option to cancel or proceed.
 
 No login. No account. No setup beyond the commands above. If anything about your environment is incomplete, `check_setup.py` (or the app itself) tells you exactly what's missing and how to fix it — it won't fail with a cryptic error partway through.
 
@@ -83,13 +85,15 @@ Already bundled in the repo — no need to find your own test data:
 | Receipt / Bill Scanner | [`data/samples/receipt_multi_item_bill.png`](data/samples/receipt_multi_item_bill.png) | A restaurant bill with subtotal/tax/service-charge decoys, to test picking the *real* total |
 | Receipt / Bill Scanner | [`data/samples/receipt_blurry_photo.png`](data/samples/receipt_blurry_photo.png) | A heavily blurred photo — the "this should fail cleanly, not guess" case |
 | Receipt / Bill Scanner | [`data/samples/receipt_handwritten_note.png`](data/samples/receipt_handwritten_note.png) | A handwritten IOU note — the other "should fail cleanly" case |
+| Call Shield | no sample file — use your own voice/mic | "Record live": read one of the sample transcripts below out loud (or play it on speakerphone) and it's captured and analyzed live |
 | Call Shield | built into `app.py` (5 sample transcripts) | 3 scam calls (digital-arrest, fake courier, fake bank) + 2 legit calls, pasteable with one click |
 | Call Shield | [`data/samples/call_digital_arrest_scam.wav`](data/samples/call_digital_arrest_scam.wav) | Spoken digital-arrest scam, synthesized audio, run through real on-device speech-to-text |
 | Call Shield | [`data/samples/call_fake_courier_scam.wav`](data/samples/call_fake_courier_scam.wav) | Spoken fake-courier scam |
 | Call Shield | [`data/samples/call_fake_bank_scam.wav`](data/samples/call_fake_bank_scam.wav) | Spoken fake-bank scam |
 | Call Shield | [`data/samples/call_legit_bank_call.wav`](data/samples/call_legit_bank_call.wav) | Spoken legitimate bank call |
+| Payment Pause | no sample files of its own | Reuses whatever Scam Screenshot Scanner or Call Shield just flagged — flag one of the samples above, then switch to this tab |
 
-Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box; the receipt scanner accepts any payment confirmation, receipt, or bill screenshot; Call Shield accepts a pasted transcript or a WAV recording.
+Want to try your own? The scam scanner accepts any screenshot with legible text; the spend categorizer accepts any bank/UPI SMS text, one message per line, pasted into the text box; the receipt scanner accepts any payment confirmation, receipt, or bill screenshot; Call Shield accepts a pasted transcript or a WAV recording; Payment Pause has no input of its own — it reacts to whatever the other two just flagged.
 
 ## Architecture: one engine, three jobs
 
@@ -213,13 +217,15 @@ Two genuine, unresolved limitations, not glossed over: **decimal cents can be si
 
 ## Call Shield
 
-**This is a transcript-analysis demo, not live call interception — said plainly, in the UI and here.** NXTSight cannot listen to or intercept an actual phone call. Doing that would require phone/telephony-level OS integration — call-audio access, a dialer or carrier hook — that a local Python app fundamentally cannot do and this prototype does not attempt. What Call Shield actually does: analyze a **transcript**, either pasted directly or produced by transcribing an **uploaded recording** on-device first. The Call Shield tab carries this same disclaimer as a persistent, visible banner, not a footnote.
+**This still isn't telephony-level call interception — said plainly, in the UI and here.** NXTSight cannot tap into the phone system, a carrier, or a dialer to listen to an actual phone call. Doing that would require phone/telephony-level OS integration — call-audio access, a dialer or carrier hook — that a local Python app fundamentally cannot do and this prototype does not attempt. What *is* real: **"Record live"** captures actual audio through your device's microphone — the same way a person in the room would hear it, e.g. a call held on speakerphone next to the laptop — transcribes it on-device, and analyzes it, all live, no pre-recorded sample required. It just can't reach into a call NXTSight isn't physically in the room for. Alongside that: paste a transcript directly, or upload a pre-recorded WAV to transcribe on-device first. The Call Shield tab carries this same disclaimer as a persistent, visible banner, not a footnote.
 
 `analyze_call(transcript) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/call_shield/classifier.py](src/call_shield/classifier.py)) — same result shape as `classify_scam()`, registered as its own Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-three-jobs) above). Its own model, not a reuse of the SMS classifier's weights: a call transcript is multi-turn dialogue, much longer than a single message, and carries vocabulary specific to India's call-fraud landscape (digital-arrest threats, "stay on video call," police/CBI/customs impersonation) that isn't represented in SMS training data at all — trained on 30 labeled call-transcript examples ([src/call_shield/data.py](src/call_shield/data.py)).
 
 **The `reason` cites which part of the call triggered it, not just which words.** A transcript is long enough that "contains scam phrases" alone isn't actionable — `analyze_call()` scores every line of the transcript against the model's own learned vocabulary and quotes the single line with the strongest match, e.g. *`Flagged because of this part of the call: "Caller: ...transfer all funds from your savings account to the RBI secure holding account..." — contains phrases commonly seen in scam calls: 'otp', 'account', 'verification'.`*
 
 **Speech-to-text** (`extract_text_from_audio()`, [src/pipeline/stt.py](src/pipeline/stt.py)) runs OpenAI's Whisper (`tiny.en`) fully on-device via PyTorch — WAV only, deliberately. Whisper's own audio loader shells out to a system `ffmpeg` binary for other formats, which isn't installed on every machine (this dev Mac included, no Homebrew either); rather than adding that dependency, WAV files are decoded with the standard-library `wave` module and resampled to 16kHz with plain numpy, so the only new dependency is Whisper itself. Retrain the classifier with `python -m src.call_shield.train_classifier`.
+
+**"Record live" (microphone) uses Streamlit's own `st.audio_input` widget** (`app.py`), requested at 16kHz — already the pipeline's target sample rate — and hands the recorded WAV bytes straight to the exact same `analyze_call_recording()` used by the WAV-upload path, through a temp file. No separate code path to trust: whatever's already tested against the 4 bundled recordings runs identically here. The one thing that genuinely can't be covered by `pytest` is the browser's own microphone capture (it needs a real mic and a real click) — that part is verified manually, live, not by an automated test.
 
 **Tested against 5 held-out call transcripts** (3 scam: digital-arrest, fake courier, fake bank; 2 legit — none copied from training data) **and the 4 bundled sample recordings, transcribed for real, not just pasted as text.** Locked in as regression tests in [tests/test_call_shield.py](tests/test_call_shield.py) and [tests/test_stt.py](tests/test_stt.py):
 
@@ -242,6 +248,22 @@ python -m src.call_shield.train_classifier          # produces the .onnx
 python scripts/aihub_compile_call_shield.py           # compiles + profiles it on real Snapdragon hardware
 ```
 
+## Payment Pause
+
+**This is a simulated payment attempt, not a real payment-app intercept — said plainly, in the UI and here.** NXTSight cannot see or intercept a payment actually being made in a real UPI or banking app; doing that would require integration with that app, or the OS's own payments layer, which is beyond what a local Python app can do and beyond this prototype's scope. What Payment Pause actually does: watch a short-lived, **in-memory-only** log (nothing written to disk, nothing sent anywhere — a plain Python list that lives only as long as the demo session does) of anything Scam Screenshot Scanner or Call Shield has flagged recently, and **automatically** run a simulated payment attempt a few seconds after any new flag — no button, no click — checking that log at the moment of that attempt.
+
+**The matching rule is deliberately simple, because it has to be explainable, not just effective** ([`src/pipeline/payment_pause.py`](src/pipeline/payment_pause.py)): any flag raised in the last `WINDOW_MINUTES` (**10**, hardcoded) pauses any payment attempt. No correlation against the payment's amount, contact, or app — that would need signals a local demo app doesn't have access to. If one or more flags fall inside that window, `recent_flags()` returns them (newest first) and the UI shows exactly what was flagged, by which feature, how long ago, and why, next to **Cancel payment** / **Proceed anyway**. Outside the window, or with no flags at all, the simulated payment proceeds normally.
+
+**Why automatic, not a button:** the point being demonstrated is a scammer's manufactured urgency trying to rush someone from a scam message or call straight into paying, before they've had time to think. A "click here to simulate a payment" button undercuts that — it turns the intervention into something the user has to go looking for. So the Payment Pause tab itself watches for any flag it hasn't auto-checked yet (`auto_checked_version` in `st.session_state`) and, on the next rerun that touches that tab, shows a live 3-second countdown ("auto-simulating a payment attempt in 3... 2... 1...") before evaluating `recent_flags()` — the interruption happens on its own.
+
+**Demo scenario, start to finish:**
+1. Open **Scam Screenshot Scanner**, pick `scam_bank_kyc_alert` — it's flagged as a likely scam (~61% confidence), and a caption confirms it was logged to Payment Pause.
+2. Switch to the **Payment Pause** tab. The flag log (collapsed by default) shows 1 entry: *Scam Screenshot Scanner, just now — contains phrases commonly seen in scams: 'update', 'kyc', 'immediately', 'suspension'.* A 3-second countdown appears on its own, then resolves.
+3. **Payment paused** — no click needed to get here. That exact flag is shown back: what, when, why.
+4. Click **Cancel payment** (or **Proceed anyway**, to show the override path exists too) and the interruption clears.
+
+**A real bug this feature's own testing surfaced:** Streamlit reruns the *entire* script on every interaction anywhere in the app — not just the widget that changed. Scam Screenshot Scanner and Call Shield's audio/live-microphone paths all analyze as soon as input is available, with no separate "Analyze" button, so the very first version of this feature silently re-flagged the same still-selected image or recording on *every unrelated click elsewhere in the app* — switching to the Payment Pause tab, for example, was enough to double the flag log. Fixed with a small dedupe guard (`_flag_once()` in `app.py`): each of those auto-triggering inputs only logs a flag the first time a given result is seen, tracked in `st.session_state`, not on every incidental rerun. The auto-trigger check itself needed the same discipline — it's guarded by `auto_checked_version` so an unrelated click doesn't replay the 3-second countdown or re-pause an already-dismissed flag. Verified live: flagging one screenshot, then clicking around the Call Shield and Payment Pause tabs, leaves the flag log at 1 entry and the countdown firing exactly once.
+
 ## Project structure
 
 ```
@@ -256,7 +278,8 @@ NXTSight/
 │   │   ├── engine.py         # NXTSightEngine: the one shared object all three tasks call through
 │   │   ├── network_guard.py  # blocks + proves-blocked any non-loopback network connection
 │   │   ├── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
-│   │   └── stt.py            # extract_text_from_audio(): WAV recording -> raw text (Whisper, ffmpeg-free)
+│   │   ├── stt.py            # extract_text_from_audio(): WAV recording -> raw text (Whisper, ffmpeg-free)
+│   │   └── payment_pause.py  # feature 5's logic: in-memory flag log + the "recent flag pauses a payment" rule
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
@@ -283,7 +306,8 @@ NXTSight/
 ├── data/samples/            # sample scam/receipt screenshots, sample call recordings, sample transaction text
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
-│                             # test_network_guard.py, test_preflight.py, test_call_shield.py, test_stt.py
+│                             # test_network_guard.py, test_preflight.py, test_call_shield.py, test_stt.py,
+│                             # test_payment_pause.py
 ├── assets/screenshots/      # demo screenshots for the submission write-up
 ├── requirements.txt
 └── README.md
@@ -369,4 +393,4 @@ Both models load and report their expected shapes locally through `runtime.py` �
 
 ## Status
 
-All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), and scam-call detection (`analyze_call` / `analyze_call_recording`). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR and speech-to-text run on CPU today, with OCR's Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call. Full test suite: 127 tests, all passing, verified on a from-scratch install.
+All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), scam-call detection (`analyze_call` / `analyze_call_recording`), and Payment Pause (`recent_flags`, tying the two scam-detection features to a simulated payment-confirmation screen). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR and speech-to-text run on CPU today, with OCR's Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call; Payment Pause is pure logic on top of the other two features' output and doesn't touch the model-inference path at all. Full test suite: 137 tests, all passing, verified on a from-scratch install.

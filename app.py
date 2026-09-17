@@ -14,6 +14,7 @@ Run it with:
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from src.pipeline import preflight
@@ -59,6 +60,7 @@ network_guard.install()
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
 from src.pipeline.ocr import extract_text_from_image
+from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
 from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
@@ -97,12 +99,34 @@ Caller: Probably 6 AM from my place, I'll send the details on the group chat."""
 }
 
 
-def _render_call_verdict(result):
+def _flag_once(session_key, source, reason, confidence):
+    """Log a flag to the Payment Pause log, but only the first time this
+    exact (source, reason) result is seen for this widget selection.
+
+    Streamlit reruns the *entire* script on every interaction anywhere in
+    the app, not just the widget that changed. The Scam Screenshot Scanner
+    and the Call Shield audio path both analyze as soon as a file is
+    selected, with no separate "Analyze" button — so without this guard,
+    clicking something unrelated (e.g. Payment Pause's own button) would
+    silently re-run that analysis and add a duplicate flag every time.
+    """
+    flag_key = f"{source}:{reason}"
+    if st.session_state.get(session_key) != flag_key:
+        add_flag(st.session_state.flag_log, source=source, reason=reason, confidence=confidence)
+        st.session_state[session_key] = flag_key
+
+
+def _render_call_verdict(result, flag_session_key):
     if result["reason"].startswith("Couldn't analyze this"):
         st.warning(result["reason"])
     elif result["is_scam"]:
         st.error(f"**Likely a scam call** — {result['confidence'] * 100:.0f}% confidence")
         st.write(result["reason"])
+        _flag_once(flag_session_key, "Call Shield", result["reason"], result["confidence"])
+        st.caption(
+            "Logged to **Payment Pause** — open that tab and a simulated payment attempt will "
+            "run on its own in a few seconds and get paused on this flag."
+        )
     else:
         st.success(f"**Looks like a legitimate call** — {result['confidence'] * 100:.0f}% confidence")
         st.write(result["reason"])
@@ -158,8 +182,20 @@ st.warning(
 if "screenshot_transactions" not in st.session_state:
     st.session_state.screenshot_transactions = []
 
-scam_tab, spend_tab, receipt_tab, call_tab = st.tabs(
-    ["Scam Screenshot Scanner", "Spend Insight", "Receipt / Bill Scanner", "Call Shield"]
+if "flag_log" not in st.session_state:
+    st.session_state.flag_log = []
+
+if "payment_interrupt" not in st.session_state:
+    st.session_state.payment_interrupt = None
+
+scam_tab, spend_tab, receipt_tab, call_tab, payment_tab = st.tabs(
+    [
+        "Scam Screenshot Scanner",
+        "Spend Insight",
+        "Receipt / Bill Scanner",
+        "Call Shield",
+        "Payment Pause",
+    ]
 )
 
 with scam_tab:
@@ -204,6 +240,13 @@ with scam_tab:
                 elif result["is_scam"]:
                     st.error(f"**Likely a scam** — {result['confidence'] * 100:.0f}% confidence")
                     st.write(result["reason"])
+                    _flag_once(
+                        "_last_scam_flag", "Scam Screenshot Scanner", result["reason"], result["confidence"]
+                    )
+                    st.caption(
+                        "Logged to **Payment Pause** — open that tab and a simulated payment "
+                        "attempt will run on its own in a few seconds and get paused on this flag."
+                    )
                 else:
                     st.success(f"**Looks legitimate** — {result['confidence'] * 100:.0f}% confidence")
                     st.write(result["reason"])
@@ -337,10 +380,14 @@ with receipt_tab:
 with call_tab:
     st.subheader("Call Shield")
     st.warning(
-        "**This analyzes a transcript, not a live call.** NXTSight cannot intercept or listen to an "
-        "actual phone call — that would require phone/telephony-level integration (call-audio access, "
-        "a dialer or carrier hook) far beyond a local app's scope, and beyond what this prototype does. "
-        "What it *can* do: analyze a pasted transcript, or a recording transcribed on-device first."
+        "**This still isn't real telephony-level call interception — read this before demoing.** "
+        "'Record live' below captures real audio through **your device's microphone**, exactly like a "
+        "person listening in the room would — the same way you'd hold a call on speakerphone next to "
+        "this laptop. It does **not** tap into the phone system, a carrier, or a dialer, and it can't "
+        "reach into a call NXTSight isn't in the room for. Genuine live-call interception would need "
+        "phone/telephony-level OS integration (call-audio access, a dialer or carrier hook) that's beyond "
+        "a local app's scope and beyond what this prototype does. What's real: the microphone capture, "
+        "the on-device transcription, and the scam-pattern analysis — all three actually run, live."
     )
     st.write(
         "Looks for patterns specific to India's call-fraud landscape: impersonating a bank, police, or "
@@ -349,10 +396,39 @@ with call_tab:
     )
 
     call_input_mode = st.radio(
-        "Call input", ["Paste transcript", "Upload recording (WAV)"], horizontal=True, label_visibility="collapsed"
+        "Call input",
+        ["Record live (microphone)", "Paste transcript", "Upload recording (WAV)"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    if call_input_mode == "Paste transcript":
+    if call_input_mode == "Record live (microphone)":
+        st.write(
+            "Play the call on speakerphone next to this device (or just speak it), click the "
+            "microphone, and stop when you're done — it's transcribed on-device and checked "
+            "immediately, the same way as an uploaded recording."
+        )
+        mic_recording = st.audio_input("Record a call", label_visibility="collapsed")
+
+        if mic_recording is not None:
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(mic_recording.getvalue())
+                    mic_audio_path = Path(tmp.name)
+
+                with st.spinner("Transcribing on-device (Whisper) and checking for scam-call patterns..."):
+                    mic_result = analyze_call_recording(str(mic_audio_path))
+
+                if not mic_result["ok"]:
+                    st.warning(mic_result["message"])
+                else:
+                    with st.expander("Transcript"):
+                        st.text(mic_result["transcript"])
+                    _render_call_verdict(mic_result, "_last_call_mic_flag")
+            except Exception as exc:
+                st.error(f"Couldn't process this recording: {exc}")
+
+    elif call_input_mode == "Paste transcript":
         if "call_transcript_text" not in st.session_state:
             st.session_state.call_transcript_text = ""
 
@@ -375,7 +451,7 @@ with call_tab:
             try:
                 with st.spinner("Checking for scam-call patterns..."):
                     call_result = analyze_call(transcript_text)
-                _render_call_verdict(call_result)
+                _render_call_verdict(call_result, "_last_call_paste_flag")
             except Exception as exc:
                 st.error(f"Couldn't analyze this transcript: {exc}")
 
@@ -412,6 +488,93 @@ with call_tab:
                 else:
                     with st.expander("Transcript"):
                         st.text(call_result["transcript"])
-                    _render_call_verdict(call_result)
+                    _render_call_verdict(call_result, "_last_call_audio_flag")
             except Exception as exc:
                 st.error(f"Couldn't process this recording: {exc}")
+
+with payment_tab:
+    st.subheader("Payment Pause")
+    st.warning(
+        "**The 'payment attempt' this pauses is simulated — nothing here talks to a real "
+        "payment app.** NXTSight cannot see or intercept a real payment being made in an "
+        "actual UPI or banking app — that would require integration with that app (or the OS "
+        "payments layer) far beyond what a local Python app can do. What's real: the flag log "
+        "below, and the pause/interrupt logic that runs against it automatically. This "
+        "demonstrates that logic and the interruption screen, not a working payment intercept."
+    )
+    st.write(
+        "Ties **Scam Screenshot Scanner** and **Call Shield** together: whenever either one "
+        f"flags something as a likely scam, it's logged here, and a simulated payment attempt "
+        "runs **on its own a few seconds later, with no click needed** — the same way a "
+        "scammer's manufactured urgency tries to rush someone straight from a scam message or "
+        "call into paying. If that simulated attempt lands while the flag is still within "
+        f"{WINDOW_MINUTES} minutes, NXTSight pauses it and shows you what was flagged, when, "
+        "and why — the simple rule is: **any flag raised in the last "
+        f"{WINDOW_MINUTES} minutes pauses any payment attempt.** No matching against amount or "
+        "contact — that would need signals this prototype doesn't have."
+    )
+
+    if "auto_checked_version" not in st.session_state:
+        st.session_state.auto_checked_version = 0
+
+    with st.expander(f"Flag log (this session, {len(st.session_state.flag_log)} total)"):
+        if not st.session_state.flag_log:
+            st.caption(
+                "Nothing flagged yet. Go flag a scam screenshot or a scam call in the other "
+                "tabs — a simulated payment attempt will run automatically a few seconds "
+                "later and land right here."
+            )
+        else:
+            for flag in sorted(st.session_state.flag_log, key=lambda f: f.at, reverse=True):
+                st.write(f"- **{flag.source}**, {format_age(flag.at)} — {flag.reason}")
+            if st.button("Clear flag log"):
+                st.session_state.flag_log = []
+                st.session_state.payment_interrupt = None
+                st.session_state.auto_checked_version = 0
+                st.rerun()
+
+    st.divider()
+
+    current_flag_count = len(st.session_state.flag_log)
+    if current_flag_count > st.session_state.auto_checked_version:
+        # A new flag arrived since the last automatic check — simulate a
+        # payment attempt happening on its own a few seconds later, with no
+        # click required, rather than waiting for someone to press a button.
+        countdown_placeholder = st.empty()
+        for remaining in (3, 2, 1):
+            countdown_placeholder.info(
+                f"New scam flag detected — auto-simulating a payment attempt in {remaining}..."
+            )
+            time.sleep(1)
+        countdown_placeholder.empty()
+
+        matches = recent_flags(st.session_state.flag_log, WINDOW_MINUTES)
+        st.session_state.payment_interrupt = matches or None
+        st.session_state.auto_checked_version = current_flag_count
+        if not matches:
+            st.toast("Auto-simulated payment attempt — no recent flags, it would proceed normally.")
+
+    if st.session_state.payment_interrupt:
+        matches = st.session_state.payment_interrupt
+        st.error(
+            f"**Payment paused.** {len(matches)} scam flag(s) in the last {WINDOW_MINUTES} minutes:"
+        )
+        for flag in matches:
+            st.write(
+                f"- **{flag.source}**, {format_age(flag.at)} "
+                f"({flag.confidence * 100:.0f}% confidence) — {flag.reason}"
+            )
+        cancel_col, proceed_col = st.columns(2)
+        if cancel_col.button("Cancel payment", type="primary"):
+            st.session_state.payment_interrupt = None
+            st.toast("Payment cancelled.")
+            st.rerun()
+        if proceed_col.button("Proceed anyway"):
+            st.session_state.payment_interrupt = None
+            st.toast("Payment confirmed despite the warning (simulated).")
+            st.rerun()
+    else:
+        st.success(
+            f"**Current status:** no scam flags in the last {WINDOW_MINUTES} minutes — a "
+            "confirmed payment would proceed normally."
+        )
