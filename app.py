@@ -143,7 +143,7 @@ Rs 1,240.00 debited from A/c XX1234 towards BESCOM ELECTRICITY BILL on 12-Sep-25
 st.set_page_config(page_title="NXTSight", layout="centered")
 
 st.title("NXTSight")
-st.caption("On-device scam detection + spend insight — Snapdragon AI Lab Build & Present Challenge")
+st.caption("Your on-device shield against financial fraud — built for the Snapdragon AI Lab Build & Present Challenge")
 
 _, execution_description = select_execution_providers()
 is_on_npu = execution_description.startswith("Snapdragon NPU")
@@ -172,11 +172,15 @@ with status_col2:
         st.stop()
 
 st.warning(
-    "**Demo simplification.** You're pasting text or uploading a screenshot by hand so you can "
-    "try this live. In the real product, NXTSight reads your phone's incoming SMS and "
-    "notifications **automatically in the background** — the same way apps like Walnut or "
-    "Money View already do in India — so you'd never open an app or type anything yourself. "
-    "This screen exists only to demo the underlying engine; it is not the intended product experience."
+    "**This is a live working prototype, not the finished product.** You're pasting text or "
+    "uploading a screenshot by hand so you can try it live. In the real product, NXTSight "
+    "reads your phone's incoming SMS and notifications **automatically in the background** — "
+    "the same way apps like Walnut or Money View already do in India — so you'd never open an "
+    "app or type anything yourself.\n\n"
+    "Two more simplifications worth knowing about: **Call Shield** listens through this "
+    "device's microphone, like a person in the room — it doesn't tap into the phone system "
+    "itself. **Payment Pause** simulates a payment attempt to show how the warning would "
+    "work — it isn't connected to a real payment app yet."
 )
 
 if "screenshot_transactions" not in st.session_state:
@@ -379,16 +383,6 @@ with receipt_tab:
 
 with call_tab:
     st.subheader("Call Shield")
-    st.warning(
-        "**This still isn't real telephony-level call interception — read this before demoing.** "
-        "'Record live' below captures real audio through **your device's microphone**, exactly like a "
-        "person listening in the room would — the same way you'd hold a call on speakerphone next to "
-        "this laptop. It does **not** tap into the phone system, a carrier, or a dialer, and it can't "
-        "reach into a call NXTSight isn't in the room for. Genuine live-call interception would need "
-        "phone/telephony-level OS integration (call-audio access, a dialer or carrier hook) that's beyond "
-        "a local app's scope and beyond what this prototype does. What's real: the microphone capture, "
-        "the on-device transcription, and the scam-pattern analysis — all three actually run, live."
-    )
     st.write(
         "Looks for patterns specific to India's call-fraud landscape: impersonating a bank, police, or "
         "courier service; manufactured urgency; threats of arrest or legal action; requests for an OTP "
@@ -494,14 +488,6 @@ with call_tab:
 
 with payment_tab:
     st.subheader("Payment Pause")
-    st.warning(
-        "**The 'payment attempt' this pauses is simulated — nothing here talks to a real "
-        "payment app.** NXTSight cannot see or intercept a real payment being made in an "
-        "actual UPI or banking app — that would require integration with that app (or the OS "
-        "payments layer) far beyond what a local Python app can do. What's real: the flag log "
-        "below, and the pause/interrupt logic that runs against it automatically. This "
-        "demonstrates that logic and the interruption screen, not a working payment intercept."
-    )
     st.write(
         "Ties **Scam Screenshot Scanner** and **Call Shield** together: whenever either one "
         f"flags something as a likely scam, it's logged here, and a simulated payment attempt "
