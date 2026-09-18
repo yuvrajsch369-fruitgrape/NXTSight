@@ -54,11 +54,12 @@ opencv-python-headless==4.9.0.80
 joblib==1.6.0
 
 # Text classification / lightweight local NLP (scam detection, spend
-# categorization). skl2onnx exports the trained scikit-learn classifier to
-# ONNX so it runs through the same QNN-aware runtime.py as the OCR models.
-# langdetect flags non-English/gibberish input before it reaches a model.
+# categorization). ONNX export is hand-built (src/pipeline/onnx_export.py,
+# using the `onnx` package directly below) rather than via skl2onnx's
+# default converter, which emits an ai.onnx.ml op Qualcomm AI Hub's
+# compiler rejects. langdetect flags non-English/gibberish input before it
+# reaches a model.
 scikit-learn==1.9.1
-skl2onnx==1.20.0
 langdetect==1.0.9
 
 # Call Shield speech-to-text (feature 4: scam-call detection from an

@@ -25,7 +25,6 @@ REQUIRED_MODULES = {
     "easyocr": "easyocr",
     "torch": "torch",
     "sklearn": "scikit-learn",
-    "skl2onnx": "skl2onnx",
     "langdetect": "langdetect",
     "onnxruntime": "onnxruntime",
     "joblib": "joblib",

@@ -6,10 +6,11 @@ classifiers — run it once:
     python -m src.call_shield.train_classifier
 
 TF-IDF + Logistic Regression on the labeled call-transcript dataset in
-data.py, exported to ONNX via skl2onnx, registered as its own Task on the
-shared NXTSightEngine. Call transcripts are much longer and more varied
-than a single SMS, so this uses a larger vocabulary cap than the other
-two classifiers' training scripts.
+data.py, exported to ONNX by hand (src/pipeline/onnx_export.py, not
+skl2onnx's default converter — see that module's docstring for why),
+registered as its own Task on the shared NXTSightEngine. Call transcripts
+are much longer and more varied than a single SMS, so this uses a larger
+vocabulary cap than the other two classifiers' training scripts.
 """
 
 import json
@@ -19,10 +20,9 @@ import numpy as np
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
 
 from src.call_shield.data import TRAINING_DATA
+from src.pipeline.onnx_export import export_logistic_regression
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 TOP_TERMS_PER_CLASS = 40
@@ -46,12 +46,7 @@ def main():
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
 
-    onnx_model = convert_sklearn(
-        classifier,
-        initial_types=[("input", FloatTensorType([None, features.shape[1]]))],
-        options={id(classifier): {"zipmap": False}},
-        target_opset=13,
-    )
+    onnx_model = export_logistic_regression(classifier, features.shape[1])
     (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
 
     vocabulary = vectorizer.get_feature_names_out()

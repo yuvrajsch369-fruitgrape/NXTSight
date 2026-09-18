@@ -1,8 +1,9 @@
 """Train the spend-category classifier and export it to ONNX.
 
 Mirrors src/scam_detector/train_classifier.py — same local, no-AI-Hub-
-account-needed build step, same TF-IDF + Logistic Regression + skl2onnx
-approach, reused here for a different (multi-class) label space:
+account-needed build step, same TF-IDF + Logistic Regression + hand-built
+ONNX export (src/pipeline/onnx_export.py) approach, reused here for a
+different (multi-class) label space:
 
     python -m src.spend_categorizer.train_classifier
 
@@ -19,9 +20,8 @@ import numpy as np
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
 
+from src.pipeline.onnx_export import export_logistic_regression
 from src.spend_categorizer.data import CATEGORIES, TRAINING_DATA
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
@@ -59,12 +59,7 @@ def main():
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
 
-    onnx_model = convert_sklearn(
-        classifier,
-        initial_types=[("input", FloatTensorType([None, features.shape[1]]))],
-        options={id(classifier): {"zipmap": False}},
-        target_opset=13,
-    )
+    onnx_model = export_logistic_regression(classifier, features.shape[1])
     (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
     (ARTIFACTS_DIR / "categories.json").write_text(json.dumps(CATEGORIES, indent=2))
 

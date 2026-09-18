@@ -135,7 +135,7 @@ Screenshot OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py)) and call-audio tra
 
 `classify_scam(text) -> {"is_scam": bool, "confidence": float, "reason": str}` ([src/scam_detector/classifier.py](src/scam_detector/classifier.py)) looks for the patterns behind fake bank alerts, OTP-sharing requests, too-good-to-be-true investment offers, urgent account-blocked threats, and fake delivery/KYC/job-offer scams.
 
-**The model:** a TF-IDF + Logistic Regression classifier trained on 68 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~15KB) via `skl2onnx`, registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-three-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
+**The model:** a TF-IDF + Logistic Regression classifier trained on 68 labeled examples ([src/scam_detector/data.py](src/scam_detector/data.py)), exported to ONNX (~12KB) by hand ([src/pipeline/onnx_export.py](src/pipeline/onnx_export.py) — see why below), registered as a Task on the shared `NXTSightEngine` (see [Architecture](#architecture-one-engine-three-jobs) above) — so once compiled for Snapdragon via AI Hub, it runs on the NPU too, no code change. Retrain it with:
 
 ```bash
 python -m src.scam_detector.train_classifier
@@ -161,11 +161,13 @@ python -m src.scam_detector.train_classifier      # produces the .onnx
 python scripts/aihub_compile_scam_classifier.py    # compiles + profiles it on real Snapdragon hardware
 ```
 
+**Actually done, not just described** — [compile job](https://workbench.aihub.qualcomm.com/jobs/jgnz326mg/) and [profile job](https://workbench.aihub.qualcomm.com/jobs/jp2rl8xmg/), both SUCCESS on a real **Snapdragon X Elite CRD**: **41 microseconds** per prediction, every op mapped to the **NPU** compute unit. Getting here took two real, fixed bugs, not a clean first try: `skl2onnx`'s default converter emits an ONNX graph with a dynamic batch dimension (AI Hub's compiler: *"Model input 'input' has dynamic shapes. Please use a static shape"*) and an `ai.onnx.ml.LinearClassifier` op (*"Domain name 'ai.onnx.ml' ... is not supported by Qualcomm AI Hub Workbench"*) — a classical-ML op an NPU compiler has no way to lower. Fixed by exporting by hand instead: a static batch size of 1 (the engine only ever runs one text at a time) and a plain `Gemm → Softmax → ArgMax` graph using only core `ai.onnx` ops, mathematically identical to sklearn's own `predict_proba` (verified bit-for-bit against the pre-fix confidence score). The downloaded compiled artifact lives at `src/scam_detector/artifacts/classifier_snapdragon.onnx.onnx.zip`. The live app still runs the portable `classifier.onnx` through the CPU/QNN auto-detecting `runtime.py` — same honest distinction as OCR below.
+
 ## Spend categorizer
 
 `categorize_transactions(list_of_texts) -> {"categorized": [...], "insight": str}` ([src/spend_categorizer/categorizer.py](src/spend_categorizer/categorizer.py)) takes a batch of bank/UPI transaction SMS text and sorts each into one of 11 categories (Food & Dining, Groceries, Shopping, Transport, Bills & Utilities, Entertainment, Transfers & UPI P2P, Income & Refunds, Healthcare, Investment & Savings, Cash Withdrawal), then produces one plain-language spending insight across the batch.
 
-**Calls through the same shared `NXTSightEngine`** as the scam classifier (see [Architecture](#architecture-one-engine-three-jobs) above) — TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX via `skl2onnx`, registered as its own Task. This module never imports `onnxruntime` or `joblib` directly; every model-serving line (text validation, vectorization, NPU/CPU session creation) lives once, in the engine, not once per feature. Retrain it with:
+**Calls through the same shared `NXTSightEngine`** as the scam classifier (see [Architecture](#architecture-one-engine-three-jobs) above) — TF-IDF + Logistic Regression trained on 88 labeled examples ([src/spend_categorizer/data.py](src/spend_categorizer/data.py)), exported to ONNX by hand ([src/pipeline/onnx_export.py](src/pipeline/onnx_export.py)), registered as its own Task. This module never imports `onnxruntime` or `joblib` directly; every model-serving line (text validation, vectorization, NPU/CPU session creation) lives once, in the engine, not once per feature. Retrain it with:
 
 ```bash
 python -m src.spend_categorizer.train_classifier
@@ -190,6 +192,8 @@ Each item in `categorized` is `{"text", "category", "confidence", "amount", "dir
 python -m src.spend_categorizer.train_classifier          # produces the .onnx
 python scripts/aihub_compile_spend_categorizer.py          # compiles + profiles it on real Snapdragon hardware
 ```
+
+**Actually done** — [compile job](https://workbench.aihub.qualcomm.com/jobs/j568n6e7g/) and [profile job](https://workbench.aihub.qualcomm.com/jobs/jgjrexz8p/), both SUCCESS on real **Snapdragon X Elite CRD** hardware: **35 microseconds** per prediction, every op on the **NPU**. Same hand-built export as the scam classifier, same reason (AI Hub's compiler rejects both a dynamic batch dimension and the `ai.onnx.ml` domain `skl2onnx` emits by default) — see the scam classifier's AI Hub section above for the full story.
 
 ## Receipt / Bill Scanner
 
@@ -248,6 +252,8 @@ python -m src.call_shield.train_classifier          # produces the .onnx
 python scripts/aihub_compile_call_shield.py           # compiles + profiles it on real Snapdragon hardware
 ```
 
+**Actually done** — [compile job](https://workbench.aihub.qualcomm.com/jobs/j5wlqo3jp/) and [profile job](https://workbench.aihub.qualcomm.com/jobs/jgddowqlg/), both SUCCESS on real **Snapdragon X Elite CRD** hardware: **41 microseconds** per prediction, every op on the **NPU**. Same hand-built export, same fix, as the other two classifiers.
+
 ## Payment Pause
 
 **This is a simulated payment attempt, not a real payment-app intercept — said plainly, in the UI and here.** NXTSight cannot see or intercept a payment actually being made in a real UPI or banking app; doing that would require integration with that app, or the OS's own payments layer, which is beyond what a local Python app can do and beyond this prototype's scope. What Payment Pause actually does: watch a short-lived, **in-memory-only** log (nothing written to disk, nothing sent anywhere — a plain Python list that lives only as long as the demo session does) of anything Scam Screenshot Scanner or Call Shield has flagged recently, and **automatically** run a simulated payment attempt a few seconds after any new flag — no button, no click — checking that log at the moment of that attempt.
@@ -279,7 +285,8 @@ NXTSight/
 │   │   ├── network_guard.py  # blocks + proves-blocked any non-loopback network connection
 │   │   ├── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
 │   │   ├── stt.py            # extract_text_from_audio(): WAV recording -> raw text (Whisper, ffmpeg-free)
-│   │   └── payment_pause.py  # feature 5's logic: in-memory flag log + the "recent flag pauses a payment" rule
+│   │   ├── payment_pause.py  # feature 5's logic: in-memory flag log + the "recent flag pauses a payment" rule
+│   │   └── onnx_export.py    # hand-built ONNX export (Gemm->Softmax->ArgMax) — AI Hub rejects skl2onnx's default output
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
@@ -391,6 +398,18 @@ This submits a real job to Qualcomm's cloud, waits for it to run on physical Sna
 
 Both models load and report their expected shapes locally through `runtime.py` — the detector takes a `(1, 3, 608, 800)` image tensor, matching EasyOCR's documented input resolution. That's solid evidence this genuinely runs on Snapdragon, not just in theory — see [What runs on-device](#what-runs-on-device-npu-vs-cpu-fallback) above for the honest caveat that these compiled models aren't yet the ones the live app calls.
 
+### Build-time: the three custom classifiers, too
+
+The same build-time step, run for real against `scripts/aihub_compile_scam_classifier.py`, `aihub_compile_spend_categorizer.py`, and `aihub_compile_call_shield.py` — not just the OCR models:
+
+| Model | Compile job | Profile job | Inference time | Compute unit |
+|---|---|---|---|---|
+| Scam classifier | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/jgnz326mg/) | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/jp2rl8xmg/) | 41 µs | NPU |
+| Spend categorizer | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/j568n6e7g/) | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/jgjrexz8p/) | 35 µs | NPU |
+| Call Shield classifier | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/j5wlqo3jp/) | [SUCCESS](https://workbench.aihub.qualcomm.com/jobs/jgddowqlg/) | 41 µs | NPU |
+
+Microseconds, not milliseconds — these are tiny linear models (12–29KB), nothing like the OCR networks above, so the gap is expected, not suspicious. Getting a real SUCCESS here took two genuine, fixed bugs first: `skl2onnx`'s default `LogisticRegression` converter — which every classifier used until this point — produces a graph with a dynamic batch dimension and an `ai.onnx.ml.LinearClassifier` op, and AI Hub's compiler rejects both outright (real error messages: *"Model input 'input' has dynamic shapes"* and *"Domain name 'ai.onnx.ml' ... is not supported"*). Fixed by dropping `skl2onnx` entirely for these three models and hand-building the ONNX graph instead ([src/pipeline/onnx_export.py](src/pipeline/onnx_export.py)): a static batch size of 1, and a plain `Gemm → Softmax → ArgMax` graph using only core `ai.onnx` ops — mathematically identical to sklearn's own `predict_proba` (checked bit-for-bit against pre-fix output: same 0.611 confidence on the same test input). The three downloaded compiled artifacts live at each feature's `artifacts/classifier_snapdragon.onnx.onnx.zip`. Same honest caveat as OCR: the live app still runs the portable `classifier.onnx` through the CPU/QNN auto-detecting `runtime.py`, not this downloaded Snapdragon-specific artifact directly.
+
 ## Status
 
-All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), scam-call detection (`analyze_call` / `analyze_call_recording`), and Payment Pause (`recent_flags`, tying the two scam-detection features to a simulated payment-confirmation screen). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise); OCR and speech-to-text run on CPU today, with OCR's Snapdragon-compiled counterpart already validated on real hardware but not yet wired into the live call; Payment Pause is pure logic on top of the other two features' output and doesn't touch the model-inference path at all. Full test suite: 137 tests, all passing, verified on a from-scratch install.
+All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), scam-call detection (`analyze_call` / `analyze_call_recording`), and Payment Pause (`recent_flags`, tying the two scam-detection features to a simulated payment-confirmation screen). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise) locally, **and** all three have now been genuinely compiled and profiled on real Snapdragon X Elite hardware via Qualcomm AI Hub (41µs / 35µs / 41µs, every op on the NPU — see [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) above), same as OCR's detector/recognizer. For all four model types, the same honest caveat holds: the AI-Hub-compiled artifact is downloaded and verified, but the live app still runs the portable local `.onnx` through the CPU/QNN auto-detecting `runtime.py`, not the downloaded Snapdragon-specific one directly. OCR and speech-to-text themselves still run on CPU only (EasyOCR/Whisper via PyTorch, not through `runtime.py` at all). Payment Pause is pure logic on top of the other two features' output and doesn't touch the model-inference path at all. Full test suite: 137 tests, all passing, verified on a from-scratch install.
