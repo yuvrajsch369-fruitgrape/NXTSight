@@ -275,6 +275,9 @@ python scripts/aihub_compile_call_shield.py           # compiles + profiles it o
 ```
 NXTSight/
 ├── app.py                   # live demo UI (streamlit run app.py) — screenshot -> verdict, or transactions -> insight
+├── backend/                 # FastAPI service exposing all five features over HTTP — see backend/README.md
+│   ├── main.py                   # uvicorn backend.main:app — one server, one shared engine, 10 endpoints
+│   └── README.md                 # requirement-by-requirement mapping + curl examples for every endpoint
 ├── .streamlit/config.toml   # disables Streamlit's own telemetry (would otherwise call out)
 ├── src/
 │   ├── pipeline/
@@ -314,7 +317,7 @@ NXTSight/
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
 │                             # test_network_guard.py, test_preflight.py, test_call_shield.py, test_stt.py,
-│                             # test_payment_pause.py
+│                             # test_payment_pause.py, test_backend.py
 ├── assets/screenshots/      # demo screenshots for the submission write-up
 ├── requirements.txt
 └── README.md
@@ -412,4 +415,4 @@ Microseconds, not milliseconds — these are tiny linear models (12–29KB), not
 
 ## Status
 
-All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), scam-call detection (`analyze_call` / `analyze_call_recording`), and Payment Pause (`recent_flags`, tying the two scam-detection features to a simulated payment-confirmation screen). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise) locally, **and** all three have now been genuinely compiled and profiled on real Snapdragon X Elite hardware via Qualcomm AI Hub (41µs / 35µs / 41µs, every op on the NPU — see [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) above), same as OCR's detector/recognizer. For all four model types, the same honest caveat holds: the AI-Hub-compiled artifact is downloaded and verified, but the live app still runs the portable local `.onnx` through the CPU/QNN auto-detecting `runtime.py`, not the downloaded Snapdragon-specific one directly. OCR and speech-to-text themselves still run on CPU only (EasyOCR/Whisper via PyTorch, not through `runtime.py` at all). Payment Pause is pure logic on top of the other two features' output and doesn't touch the model-inference path at all. Full test suite: 137 tests, all passing, verified on a from-scratch install.
+All pipeline stages work end to end: OCR (`extract_text_from_image`), scam classification (`classify_scam`), spend categorization (`categorize_transactions`), receipt/bill scanning (`process_receipt_screenshot`, which feeds into the same spend categorizer, tagged by source), scam-call detection (`analyze_call` / `analyze_call_recording`), and Payment Pause (`recent_flags`, tying the two scam-detection features to a simulated payment-confirmation screen). The scam, spend, and call classifiers all run through the Snapdragon-aware execution path (NPU when available, CPU fallback otherwise) locally, **and** all three have now been genuinely compiled and profiled on real Snapdragon X Elite hardware via Qualcomm AI Hub (41µs / 35µs / 41µs, every op on the NPU — see [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) above), same as OCR's detector/recognizer. For all four model types, the same honest caveat holds: the AI-Hub-compiled artifact is downloaded and verified, but the live app still runs the portable local `.onnx` through the CPU/QNN auto-detecting `runtime.py`, not the downloaded Snapdragon-specific one directly. OCR and speech-to-text themselves still run on CPU only (EasyOCR/Whisper via PyTorch, not through `runtime.py` at all). Payment Pause is pure logic on top of the other two features' output and doesn't touch the model-inference path at all. All five features are also exposed as a standalone HTTP API — [`backend/`](backend/README.md), `uvicorn backend.main:app` — built on this exact same engine, not a second implementation. Full test suite: 148 tests, all passing, verified on a from-scratch install.

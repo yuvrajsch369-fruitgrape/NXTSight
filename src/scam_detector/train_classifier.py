@@ -6,13 +6,21 @@ account) — run it once:
     python -m src.scam_detector.train_classifier
 
 It fits a TF-IDF + Logistic Regression pipeline on the small labeled
-dataset in data.py, then exports the classifier half to ONNX — by hand,
-via src/pipeline/onnx_export.py, not skl2onnx's default converter, since
-that emits an ai.onnx.ml op Qualcomm AI Hub's compiler rejects — so it can
-run through the same QNN-aware runtime.py used for the OCR models. Once
-this exact .onnx file is compiled for Snapdragon via AI Hub (see
+dataset in data.py, saves the fitted classifier itself (classifier.joblib
+— engine.py's fallback if ONNX export isn't available), then exports the
+classifier half to ONNX — by hand, via src/pipeline/onnx_export.py, not
+skl2onnx's default converter, since that emits an ai.onnx.ml op Qualcomm
+AI Hub's compiler rejects — so it can run through the same QNN-aware
+runtime.py used for the OCR models. Once this exact .onnx file is
+compiled for Snapdragon via AI Hub (see
 scripts/aihub_compile_scam_classifier.py), it runs on the NPU instead of
 CPU — no code change in classifier.py.
+
+The ONNX export step is deliberately isolated in its own try/except: the
+`onnx` package it needs is a training-time-only dependency (never
+required to just *run* the app — see preflight.py), so a machine missing
+it still gets a fully working classifier.joblib and a clear message,
+instead of this script crashing outright.
 
 Text vectorization (TF-IDF) stays in Python/scikit-learn rather than
 being folded into the ONNX graph, the same tradeoff the OCR stage makes
@@ -51,9 +59,19 @@ def main():
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
+    dump(classifier, ARTIFACTS_DIR / "classifier.joblib")
 
-    onnx_model = export_logistic_regression(classifier, features.shape[1])
-    (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+    try:
+        onnx_model = export_logistic_regression(classifier, features.shape[1])
+        (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+        onnx_exported = True
+    except Exception as e:
+        onnx_exported = False
+        print(
+            f"WARNING: ONNX export failed/unavailable in this environment ({type(e).__name__}: {e}). "
+            "classifier.joblib was still saved — the engine will fall back to calling it directly "
+            "(no ONNX Runtime / QNN acceleration until this is re-run somewhere ONNX export works)."
+        )
 
     # Precompute human-readable top terms per class for classifier.py's
     # `reason` field, so it doesn't need scikit-learn at inference time.
@@ -66,7 +84,9 @@ def main():
         json.dumps({"scam": top_scam, "legit": top_legit}, indent=2)
     )
 
-    print(f"Saved vectorizer.joblib, classifier.onnx, top_terms.json -> {ARTIFACTS_DIR}")
+    artifacts = "vectorizer.joblib, classifier.joblib"
+    artifacts += ", classifier.onnx" if onnx_exported else " (classifier.onnx NOT written — see warning above)"
+    print(f"Saved {artifacts}, top_terms.json -> {ARTIFACTS_DIR}")
 
 
 if __name__ == "__main__":

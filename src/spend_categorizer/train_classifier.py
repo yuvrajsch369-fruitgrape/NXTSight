@@ -11,6 +11,10 @@ Once this .onnx file is compiled for Snapdragon via AI Hub (see
 scripts/aihub_compile_spend_categorizer.py), it runs on the NPU through
 the same runtime.py used by the scam classifier and OCR — one on-device
 model-serving layer, two features.
+
+Also saves the fitted classifier itself (classifier.joblib) and isolates
+the ONNX export in its own try/except — see the identical note in
+src/scam_detector/train_classifier.py for why.
 """
 
 import json
@@ -58,12 +62,25 @@ def main():
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
+    dump(classifier, ARTIFACTS_DIR / "classifier.joblib")
 
-    onnx_model = export_logistic_regression(classifier, features.shape[1])
-    (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+    try:
+        onnx_model = export_logistic_regression(classifier, features.shape[1])
+        (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+        onnx_exported = True
+    except Exception as e:
+        onnx_exported = False
+        print(
+            f"WARNING: ONNX export failed/unavailable in this environment ({type(e).__name__}: {e}). "
+            "classifier.joblib was still saved — the engine will fall back to calling it directly "
+            "(no ONNX Runtime / QNN acceleration until this is re-run somewhere ONNX export works)."
+        )
+
     (ARTIFACTS_DIR / "categories.json").write_text(json.dumps(CATEGORIES, indent=2))
 
-    print(f"Saved vectorizer.joblib, classifier.onnx, categories.json -> {ARTIFACTS_DIR}")
+    artifacts = "vectorizer.joblib, classifier.joblib"
+    artifacts += ", classifier.onnx" if onnx_exported else " (classifier.onnx NOT written — see warning above)"
+    print(f"Saved {artifacts}, categories.json -> {ARTIFACTS_DIR}")
 
 
 if __name__ == "__main__":

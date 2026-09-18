@@ -11,6 +11,10 @@ skl2onnx's default converter — see that module's docstring for why),
 registered as its own Task on the shared NXTSightEngine. Call transcripts
 are much longer and more varied than a single SMS, so this uses a larger
 vocabulary cap than the other two classifiers' training scripts.
+
+Also saves the fitted classifier itself (classifier.joblib) and isolates
+the ONNX export in its own try/except — see the identical note in
+src/scam_detector/train_classifier.py for why.
 """
 
 import json
@@ -45,9 +49,19 @@ def main():
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
+    dump(classifier, ARTIFACTS_DIR / "classifier.joblib")
 
-    onnx_model = export_logistic_regression(classifier, features.shape[1])
-    (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+    try:
+        onnx_model = export_logistic_regression(classifier, features.shape[1])
+        (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
+        onnx_exported = True
+    except Exception as e:
+        onnx_exported = False
+        print(
+            f"WARNING: ONNX export failed/unavailable in this environment ({type(e).__name__}: {e}). "
+            "classifier.joblib was still saved — the engine will fall back to calling it directly "
+            "(no ONNX Runtime / QNN acceleration until this is re-run somewhere ONNX export works)."
+        )
 
     vocabulary = vectorizer.get_feature_names_out()
     coefficients = classifier.coef_[0]
@@ -58,7 +72,9 @@ def main():
         json.dumps({"scam": top_scam, "legit": top_legit}, indent=2)
     )
 
-    print(f"Saved vectorizer.joblib, classifier.onnx, top_terms.json -> {ARTIFACTS_DIR}")
+    artifacts = "vectorizer.joblib, classifier.joblib"
+    artifacts += ", classifier.onnx" if onnx_exported else " (classifier.onnx NOT written — see warning above)"
+    print(f"Saved {artifacts}, top_terms.json -> {ARTIFACTS_DIR}")
 
 
 if __name__ == "__main__":

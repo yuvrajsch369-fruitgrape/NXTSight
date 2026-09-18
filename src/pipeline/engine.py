@@ -1,19 +1,22 @@
-"""NXTSight's shared on-device inference engine — one object, two jobs.
+"""NXTSight's shared on-device inference engine — one object, several jobs.
 
 A single NXTSightEngine instance is the only thing that ever touches ONNX
-Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. Both the
-scam classifier and the spend categorizer call through this same engine
-object; neither module loads a model file or runs a session directly
-anymore. What differs between the two jobs is registered as a Task — its
-own trained artifacts, its own confidence/format rules — not a second copy
-of the model-serving code.
+Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. The scam
+classifier, the spend categorizer, and the Call Shield classifier all call
+through this same engine object; none of those modules loads a model file
+or runs a session directly. What differs between jobs is registered as a
+Task — its own trained artifacts, its own confidence/format rules — not a
+second copy of the model-serving code.
 
-This mirrors how you'd serve two prompts through one LLM: one engine, one
-execution path (text_guard -> vectorize -> runtime.create_inference_session,
-itself QNN-aware), and per-task logic layered on top of its output rather
-than duplicated underneath it.
+This mirrors how you'd serve several prompts through one LLM: one engine,
+one execution path (text_guard -> vectorize -> runtime.create_inference_session,
+itself QNN-aware) with per-task logic layered on top of its output rather
+than duplicated underneath it. Each task prefers its ONNX export (the
+QNN/CPU-aware path) but falls back to calling its trained scikit-learn
+model directly if that export is missing — see _ensure_loaded() below.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -23,6 +26,8 @@ from joblib import load
 
 from src.pipeline.runtime import create_inference_session
 from src.pipeline.text_guard import unanalyzable_reason
+
+logger = logging.getLogger("nxtsight")
 
 
 @dataclass
@@ -64,13 +69,41 @@ class NXTSightEngine:
         self._tasks[task.name] = task
 
     def _ensure_loaded(self, task_name: str):
+        """Load (vectorizer, (mode, model)) for a task, preferring ONNX.
+
+        `mode` is "onnx" (the QNN/CPU-aware ONNX Runtime path — the
+        provably Snapdragon-optimized one) whenever classifier.onnx
+        exists. If it doesn't — the export step failed or wasn't run on
+        this machine (e.g. the `onnx` package isn't installed; it's a
+        training-only dependency, never required at runtime) — this falls
+        back to `mode == "sklearn"`: the trained scikit-learn classifier,
+        saved by every train_classifier.py alongside the ONNX export,
+        loaded and called directly. Slower, no NPU acceleration, but the
+        engine still serves real predictions instead of the whole task
+        going dark over one missing conversion step.
+        """
         task = self._tasks[task_name]
         if task_name not in self._vectorizers:
             self._vectorizers[task_name] = load(task.artifacts_dir / "vectorizer.joblib")
         if task_name not in self._sessions:
-            self._sessions[task_name], _ = create_inference_session(
-                str(task.artifacts_dir / "classifier.onnx")
-            )
+            onnx_path = task.artifacts_dir / "classifier.onnx"
+            joblib_path = task.artifacts_dir / "classifier.joblib"
+            if onnx_path.exists():
+                session, _ = create_inference_session(str(onnx_path))
+                self._sessions[task_name] = ("onnx", session)
+            elif joblib_path.exists():
+                logger.warning(
+                    "No classifier.onnx for task '%s' — falling back to the trained "
+                    "scikit-learn model directly (no ONNX Runtime / QNN acceleration "
+                    "for this task until it's re-exported).",
+                    task_name,
+                )
+                self._sessions[task_name] = ("sklearn", load(joblib_path))
+            else:
+                raise FileNotFoundError(
+                    f"neither classifier.onnx nor classifier.joblib found for task '{task_name}' "
+                    f"in {task.artifacts_dir}"
+                )
         return self._vectorizers[task_name], self._sessions[task_name]
 
     def analyze(self, task_name: str, text) -> Union[str, Prediction]:
@@ -93,19 +126,25 @@ class NXTSightEngine:
 
         task = self._tasks[task_name]
         try:
-            vectorizer, session = self._ensure_loaded(task_name)
+            vectorizer, (mode, model) = self._ensure_loaded(task_name)
             cleaned = text.strip()[: task.max_chars]
             vector = vectorizer.transform([cleaned]).toarray().astype(np.float32)
-            input_name = session.get_inputs()[0].name
-            labels, probabilities = session.run(["label", "probabilities"], {input_name: vector})
+            if mode == "onnx":
+                input_name = model.get_inputs()[0].name
+                labels, probabilities = model.run(["label", "probabilities"], {input_name: vector})
+                label = labels[0]
+                probs = probabilities[0]
+            else:  # mode == "sklearn" — direct fallback, no ONNX Runtime involved
+                label = model.predict(vector)[0]
+                probs = model.predict_proba(vector)[0]
         except Exception as e:
             return f"the {task_name} model is unavailable right now ({type(e).__name__})"
 
-        label_id = int(labels[0])
+        label_id = int(label)
         return Prediction(
             label_id=label_id,
-            confidence=float(probabilities[0][label_id]),
-            probabilities=probabilities[0],
+            confidence=float(probs[label_id]),
+            probabilities=probs,
             text=cleaned,
         )
 

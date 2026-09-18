@@ -91,5 +91,16 @@ streamlit==1.63.0
 # available, no separate manual install step required.
 certifi==2026.7.22
 
-# Dev tooling
+# backend/ — the FastAPI service exposing all five features over HTTP.
+# uvicorn and python-multipart already arrive transitively via streamlit,
+# but are pinned explicitly here too since the backend is meant to stand
+# on its own, not silently depend on the demo UI's dependency tree.
+fastapi==0.141.1
+uvicorn==0.53.0
+python-multipart==0.0.32
+
+# Dev tooling. httpx2 is only needed for backend/'s tests (FastAPI's
+# TestClient — this starlette version requires it specifically, not the
+# more common `httpx` package).
 pytest==9.1.1
+httpx2==2.13.0

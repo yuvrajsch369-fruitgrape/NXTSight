@@ -15,9 +15,11 @@ import sys
 
 MIN_PYTHON = (3, 9)  # engine.py's `dict[str, Task]` needs PEP 585 (3.9+)
 
-# import name -> the pip/PyPI package name to report if it's missing
-REQUIRED_MODULES = {
-    "streamlit": "streamlit",
+# import name -> pip package name. The core set every entrypoint needs —
+# anything that touches the shared engine, OCR, or speech-to-text — kept
+# separate from UI-specific frameworks so backend/main.py isn't forced to
+# require streamlit just because app.py does, and vice versa.
+CORE_REQUIRED_MODULES = {
     "numpy": "numpy",
     "pandas": "pandas",
     "PIL": "pillow",
@@ -29,6 +31,10 @@ REQUIRED_MODULES = {
     "onnxruntime": "onnxruntime",
     "joblib": "joblib",
 }
+
+# app.py's full requirement set: core + the Streamlit UI itself. Default
+# for missing_dependencies() below, unchanged from before this split.
+REQUIRED_MODULES = {**CORE_REQUIRED_MODULES, "streamlit": "streamlit"}
 
 
 def python_version_problem():
@@ -44,10 +50,17 @@ def python_version_problem():
     return None
 
 
-def missing_dependencies() -> list:
-    """Return the pip package names for any required module that fails to import."""
+def missing_dependencies(required: dict = None) -> list:
+    """Return the pip package names for any required module that fails to import.
+
+    Defaults to REQUIRED_MODULES (app.py's full set, core + streamlit).
+    Pass a different dict — e.g. CORE_REQUIRED_MODULES, or that plus
+    backend/main.py's own {"fastapi": "fastapi"} — to check a different
+    entrypoint's actual needs instead.
+    """
+    required = REQUIRED_MODULES if required is None else required
     missing = []
-    for module_name, pip_name in REQUIRED_MODULES.items():
+    for module_name, pip_name in required.items():
         try:
             importlib.import_module(module_name)
         except Exception:
