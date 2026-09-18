@@ -12,10 +12,21 @@ Run it with:
     streamlit run app.py
 """
 
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# Set before any transformers/huggingface_hub import can happen anywhere
+# in the process (including transitively, via any module imported below)
+# — see src/pipeline/whisper_qai_hub.py's docstring for why this needs to
+# be genuinely first, not just "early": HuggingFace's from_pretrained()
+# makes a real network call by default to check for a newer revision,
+# even with everything cached locally, and this is the documented way to
+# force fully-offline loading everywhere in one shot.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from src.pipeline import preflight
 
@@ -59,6 +70,7 @@ from src.pipeline import network_guard
 network_guard.install()
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
+from src.pipeline import ocr_qai_hub, text_encoder, whisper_qai_hub
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
 from src.pipeline.runtime import select_execution_providers
@@ -170,6 +182,14 @@ with status_col2:
     else:
         st.error(f"**NETWORK ISOLATION CHECK FAILED:** {network_isolation_error}")
         st.stop()
+
+ocr_ai_hub_active, ocr_ai_hub_status = ocr_qai_hub.status()
+minilm_ai_hub_active, minilm_ai_hub_status = text_encoder.status()
+whisper_ai_hub_active, whisper_ai_hub_status = whisper_qai_hub.status()
+with st.expander("Which real AI Hub models are active right now?"):
+    st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✅ AI Hub-compiled model active' if ocr_ai_hub_active else '⚠️ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
+    st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✅ AI Hub-compiled model active' if minilm_ai_hub_active else '⚠️ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
+    st.write(f"**Whisper encoder (Call Shield, decoder stays local):** {'✅ AI Hub-compiled model active' if whisper_ai_hub_active else '⚠️ fallback (local Whisper tiny.en)'} — {whisper_ai_hub_status}")
 
 st.warning(
     "**This is a live working prototype, not the finished product.** You're pasting text or "

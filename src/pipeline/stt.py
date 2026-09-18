@@ -1,25 +1,32 @@
 """Speech-to-text stage of the NXTSight pipeline: turn a call recording into text.
 
-Backed by OpenAI's Whisper ("tiny.en" — small enough to run locally without
-a GPU) run fully on-device via PyTorch, the same way OCR runs via EasyOCR.
-Deliberately WAV-only for now: Whisper's own audio loader shells out to a
-system `ffmpeg` binary for other formats, which isn't installed on every
-machine (this dev Mac included) and would be a silent new system
+Prefers running through Qualcomm AI Hub's compiled Whisper-tiny encoder
+(src/pipeline/whisper_qai_hub.py) — decoding stays on qai_hub_models' own,
+unmodified PyTorch decode loop; nothing autoregressive runs through ONNX.
+Falls back to OpenAI's Whisper ("tiny.en", fully on-device via PyTorch,
+the same way OCR falls back to EasyOCR's own PyTorch inference) if that
+path isn't available for any reason. Either way the contract never
+changes: a real transcript, or a clear "Error: ..." string, never a crash.
+
+Deliberately WAV-only: Whisper's own audio loader (either path) shells out
+to a system `ffmpeg` binary for other formats, which isn't installed on
+every machine (this dev Mac included) and would be a silent new system
 dependency. WAV files are decoded here with the standard-library `wave`
 module and resampled with plain numpy instead — no ffmpeg, no extra
 dependency, and it covers the realistic case (most recording/voice-memo
 apps, and macOS's own `say -o file.wav`, export WAV natively).
-
-extract_text_from_audio() follows the exact same contract as
-extract_text_from_image() in ocr.py: never raises, returns the transcript
-or an "Error: ..." string.
 """
 
+import logging
 import os
 import wave
 from pathlib import Path
 
 import numpy as np
+
+from src.pipeline import whisper_qai_hub
+
+logger = logging.getLogger("nxtsight")
 
 _model = None
 TARGET_SAMPLE_RATE = 16000
@@ -87,13 +94,23 @@ def extract_text_from_audio(path) -> str:
     if len(audio) == 0:
         return f"Error: '{path}' contains no audio data"
 
+    text = None
     try:
-        model = _get_model()
-        result = model.transcribe(audio, fp16=False)
+        text = whisper_qai_hub.transcribe_qai_hub(audio, TARGET_SAMPLE_RATE)
     except Exception as e:
-        return f"Error: speech-to-text failed on '{path}' ({e})"
+        logger.warning(
+            "AI Hub Whisper encoder path unavailable (%s: %s) — falling back to local "
+            "Whisper 'tiny.en' (plain PyTorch) inference.",
+            type(e).__name__,
+            e,
+        )
+        try:
+            model = _get_model()
+            result = model.transcribe(audio, fp16=False)
+        except Exception as e:
+            return f"Error: speech-to-text failed on '{path}' ({e})"
+        text = result.get("text", "").strip()
 
-    text = result.get("text", "").strip()
     if not text:
         return f"Error: no speech detected in '{path}'"
 

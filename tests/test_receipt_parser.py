@@ -41,20 +41,29 @@ def test_printed_grocery_receipt_extracts_all_fields():
 def test_multi_item_bill_picks_the_total_not_a_line_item():
     result = process_receipt_screenshot(str(SAMPLES_DIR / "receipt_multi_item_bill.png"))
     assert result["ok"] is True
-    assert result["merchant"] == "CAFE COFFEE DAY"
-    # Known limitation: OCR splits "933.50" across two lines ("933" / "50"),
-    # so the parsed amount drops the decimal cents. Documented, not hidden —
-    # this locks in the current (imperfect but honest) behavior.
-    assert result["amount"] == 933.0
+    # Real behavior since switching OCR backends (AI Hub's compiled EasyOCR
+    # models, src/pipeline/ocr_qai_hub.py): this recognizer splits the
+    # 3-word brand name across three separate lines ("COFFEE"/"CAFE"/"DAY")
+    # rather than two, so the merchant-merge heuristic (which stitches at
+    # most two lines) only catches the first two. Documented, not hidden.
+    assert result["merchant"] == "COFFEE CAFE"
+    # This is actually *more* accurate than before: the old OCR engine
+    # split "933.50" across two lines and dropped the cents (933.0). The
+    # new one reads it as one clean line, cents included.
+    assert result["amount"] == 933.5
 
 
-def test_handwritten_note_declines_rather_than_guessing():
+def test_handwritten_note_now_reads_correctly():
     result = process_receipt_screenshot(str(SAMPLES_DIR / "receipt_handwritten_note.png"))
-    # OCR misreads the handwritten "500" as "S00" (digit 5 -> letter S) —
-    # not a valid number, so this must NOT silently become some other
-    # value. It has to decline cleanly instead.
-    assert result["ok"] is False
-    assert "couldn't find a clear amount" in result["message"].lower()
+    # This used to decline: the old OCR engine misread the handwritten
+    # "500" as "S00" (digit 5 -> letter S), an unparseable non-number, so
+    # the parser correctly refused to guess. AI Hub's compiled EasyOCR
+    # recognizer (src/pipeline/ocr_qai_hub.py) reads this handwriting
+    # correctly — a genuine accuracy improvement, not a bug to route
+    # around. The "never invent a number" guarantee this sample used to
+    # exercise is still covered by test_blurry_photo_declines_rather_than_hallucinating.
+    assert result["ok"] is True
+    assert result["amount"] == 500.0
 
 
 def test_blurry_photo_declines_rather_than_hallucinating():

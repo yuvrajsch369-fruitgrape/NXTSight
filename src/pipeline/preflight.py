@@ -30,6 +30,7 @@ CORE_REQUIRED_MODULES = {
     "langdetect": "langdetect",
     "onnxruntime": "onnxruntime",
     "joblib": "joblib",
+    "transformers": "transformers",
 }
 
 # app.py's full requirement set: core + the Streamlit UI itself. Default

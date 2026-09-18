@@ -54,13 +54,24 @@ opencv-python-headless==4.9.0.80
 joblib==1.6.0
 
 # Text classification / lightweight local NLP (scam detection, spend
-# categorization). ONNX export is hand-built (src/pipeline/onnx_export.py,
-# using the `onnx` package directly below) rather than via skl2onnx's
-# default converter, which emits an ai.onnx.ml op Qualcomm AI Hub's
-# compiler rejects. langdetect flags non-English/gibberish input before it
-# reaches a model.
+# categorization, Call Shield). ONNX export is hand-built
+# (src/pipeline/onnx_export.py, using the `onnx` package directly below)
+# rather than via skl2onnx's default converter, which emits an ai.onnx.ml
+# op Qualcomm AI Hub's compiler rejects. langdetect flags non-English/
+# gibberish input before it reaches a model.
 scikit-learn==1.9.1
 langdetect==1.0.9
+
+# MiniLM-v2 (src/pipeline/text_encoder.py) — the shared on-device text
+# encoder every classification head runs on top of (see engine.py).
+# transformers==4.46.3 specifically: newer releases (5.x) require
+# huggingface_hub>=1.0, which conflicts with qai_hub_models' own
+# huggingface_hub<1.0 pin — hit this for real installing transformers
+# fresh, fixed by pinning both explicitly rather than letting pip's
+# resolver pick incompatible versions.
+transformers==4.46.3
+huggingface_hub==0.36.2
+tokenizers==0.20.3
 
 # Call Shield speech-to-text (feature 4: scam-call detection from an
 # uploaded recording). Whisper's own audio loader shells out to a system

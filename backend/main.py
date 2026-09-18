@@ -20,9 +20,20 @@ including the requirement-by-requirement mapping this backend was built
 against.
 """
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+# Set before any transformers/huggingface_hub import can happen anywhere
+# in the process (including transitively, via any module imported below)
+# — see src/pipeline/whisper_qai_hub.py's docstring for why this needs to
+# be genuinely first, not just "early": HuggingFace's from_pretrained()
+# makes a real network call by default to check for a newer revision,
+# even with everything cached locally, and this is the documented way to
+# force fully-offline loading everywhere in one shot.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from src.pipeline import preflight
 
@@ -67,6 +78,7 @@ except Exception as exc:
     raise SystemExit(1)
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
+from src.pipeline import ocr_qai_hub, text_encoder, whisper_qai_hub
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
 from src.pipeline.runtime import select_execution_providers
@@ -78,6 +90,18 @@ from src.spend_categorizer.receipt_parser import process_receipt_screenshot
 # once, at process startup (not lazily per-request), so the execution
 # path is settled and logged before the server accepts a single request.
 _, EXECUTION_DESCRIPTION = select_execution_providers()
+
+# Requirement: the launch log states exactly which real AI Hub models are
+# active and on which execution path — not a generic claim. Checked once
+# at startup, same as EXECUTION_DESCRIPTION above; each classifier's own
+# ONNX/CPU-vs-sklearn-fallback state is per-task and checked lazily on
+# first use (see engine.py), so it isn't included here.
+OCR_AI_HUB_ACTIVE, OCR_AI_HUB_STATUS = ocr_qai_hub.status()
+MINILM_AI_HUB_ACTIVE, MINILM_AI_HUB_STATUS = text_encoder.status()
+WHISPER_AI_HUB_ACTIVE, WHISPER_AI_HUB_STATUS = whisper_qai_hub.status()
+print(f"[NXTSight] AI Hub OCR: {'ACTIVE' if OCR_AI_HUB_ACTIVE else 'FALLBACK'} — {OCR_AI_HUB_STATUS}")
+print(f"[NXTSight] AI Hub MiniLM-v2 text encoder: {'ACTIVE' if MINILM_AI_HUB_ACTIVE else 'FALLBACK'} — {MINILM_AI_HUB_STATUS}")
+print(f"[NXTSight] AI Hub Whisper encoder (decoder stays local): {'ACTIVE' if WHISPER_AI_HUB_ACTIVE else 'FALLBACK'} — {WHISPER_AI_HUB_STATUS}")
 
 app = FastAPI(
     title="NXTSight Backend",
@@ -127,6 +151,11 @@ def get_status():
             "network_guard before any route was registered. If that check "
             "had failed, this server would have refused to start."
         ),
+        "ai_hub_models": {
+            "ocr": {"active": OCR_AI_HUB_ACTIVE, "status": OCR_AI_HUB_STATUS},
+            "minilm_v2_text_encoder": {"active": MINILM_AI_HUB_ACTIVE, "status": MINILM_AI_HUB_STATUS},
+            "whisper_encoder": {"active": WHISPER_AI_HUB_ACTIVE, "status": WHISPER_AI_HUB_STATUS},
+        },
     }
 
 

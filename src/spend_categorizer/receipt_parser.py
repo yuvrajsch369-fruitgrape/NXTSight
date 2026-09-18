@@ -16,7 +16,12 @@ import re
 
 from src.pipeline.ocr import extract_text_from_image
 
-AMOUNT_PATTERN = re.compile(r"(?:rs\.?|inr|₹)\s?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
+# [ \t]? (not \s?) deliberately: \s also matches a literal newline, which
+# let a currency marker on one OCR'd line falsely bind to an unrelated
+# number on the *next* line (e.g. "Rs" then, on the following line, a
+# date "15/09/2025" was misread as "Rs 15"). Currency marker and amount
+# must be on the same line, as intended from the start.
+AMOUNT_PATTERN = re.compile(r"(?:rs\.?|inr|₹)[ \t]?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
 # A line that's JUST a number, nothing else — how a payment-app's amount
 # often OCRs when its ₹/currency glyph isn't captured as text. Receipts and
 # bills don't produce lines like this: their numbers always sit next to an
@@ -30,7 +35,19 @@ STANDALONE_NUMBER_LINE = re.compile(r"^[^\d]{0,2}(\d{1,3}(?:,\d{3})*(?:\.\d{1,2}
 #  - the text has to actually look like a payment screen somewhere, not just
 #    contain one isolated number with nothing else recognizable around it.
 MIN_BARE_AMOUNT = 10
-PAYMENT_CONTEXT_KEYWORDS = ["paid", "payment", "successful", "transaction", "upi", "amount", "sent", "received"]
+# Widened to include receipt/bill words, not just payment-app words — a
+# printed bill saying "total"/"gst"/"grand total" is just as strong a
+# signal this is a real purchase document as "paid"/"successful" is for a
+# payment-app screen. Still a real requirement, not a rubber stamp: text
+# with none of these words present gets no bare-number fallback at all.
+PAYMENT_CONTEXT_KEYWORDS = [
+    "paid", "payment", "successful", "transaction", "upi", "amount", "sent", "received",
+    "total", "bill", "gst", "grand",
+]
+# A decimal point OCR sometimes reads with stray spaces around it
+# ("845 . 00" instead of "845.00") — collapse those before any amount
+# regex runs, rather than trying to make every pattern whitespace-tolerant.
+_SPACED_DECIMAL = re.compile(r"(\d)\s*\.\s*(\d{1,2})(?!\d)")
 TOTAL_KEYWORDS = ["grand total", "total amount", "amount paid", "total", "paid", "amount"]
 DATE_PATTERNS = [
     re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b"),
@@ -69,6 +86,12 @@ def _extract_all_amounts(text):
 def _pick_bare_amount(full_text, lines):
     if not any(keyword in full_text.lower() for keyword in PAYMENT_CONTEXT_KEYWORDS):
         return None
+    # Same reasoning as tier 2 (largest currency-marked amount): with
+    # multiple standalone-number lines and no currency tag to disambiguate
+    # which one is the real total, the largest is the best single guess —
+    # not just whichever line happened to come first (a bill's line items
+    # are individually smaller than its total).
+    candidates = []
     for line in lines:
         match = STANDALONE_NUMBER_LINE.match(line.strip())
         if not match:
@@ -78,8 +101,8 @@ def _pick_bare_amount(full_text, lines):
         except ValueError:
             continue
         if MIN_BARE_AMOUNT <= value <= 10_000_000:
-            return value
-    return None
+            candidates.append(value)
+    return max(candidates) if candidates else None
 
 
 def _pick_amount(full_text, lines):
@@ -156,6 +179,11 @@ def parse_receipt(raw_text: str) -> dict:
     """
     if not raw_text or not raw_text.strip():
         return {"merchant": None, "amount": None, "date": None, "problem": "no text was detected in this image"}
+
+    # Collapse "845 . 00" -> "845.00" before anything else touches the
+    # text — some OCR passes read a decimal point with stray spaces
+    # around it, which would otherwise break every amount pattern below.
+    raw_text = _SPACED_DECIMAL.sub(r"\1.\2", raw_text)
 
     lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
     amount = _pick_amount(raw_text, lines)

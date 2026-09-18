@@ -1,11 +1,18 @@
-"""Train the spend-category classifier and export it to ONNX.
+"""Train the spend-category classification head on MiniLM-v2 embeddings,
+and export it to ONNX.
 
 Mirrors src/scam_detector/train_classifier.py — same local, no-AI-Hub-
-account-needed build step, same TF-IDF + Logistic Regression + hand-built
-ONNX export (src/pipeline/onnx_export.py) approach, reused here for a
-different (multi-class) label space:
+account-needed build step, same MiniLM-v2 embeddings + Logistic Regression
++ hand-built ONNX export (src/pipeline/onnx_export.py) approach, reused
+here for a different (multi-class) label space:
 
     python -m src.spend_categorizer.train_classifier
+
+A TF-IDF vectorizer is still fit and saved (vectorizer.joblib, engine.py
+requires one per task) but plays no role in the actual category decision
+anymore — categorizer.py never calls vocabulary_terms() for its reason
+text (unlike the scam classifier), so this is just kept for interface
+consistency with every other task on the shared engine.
 
 Once this .onnx file is compiled for Snapdragon via AI Hub (see
 scripts/aihub_compile_spend_categorizer.py), it runs on the NPU through
@@ -25,6 +32,7 @@ from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
+from src.pipeline import text_encoder
 from src.pipeline.onnx_export import export_logistic_regression
 from src.spend_categorizer.data import CATEGORIES, TRAINING_DATA
 
@@ -46,19 +54,20 @@ def main():
         # transaction and would otherwise dilute the real merchant-name signal.
         token_pattern=r"(?u)\b[a-zA-Z]{2,}\b",
     )
-    features = vectorizer.fit_transform(texts).toarray().astype(np.float32)
+    vectorizer.fit(texts)
 
-    # C=10: with only ~8 examples per category spread across 11 classes,
-    # the default regularization spreads probability mass too thin even on
-    # clear-cut merchant names (e.g. "swiggy" seen in training still only
-    # scored ~0.27 at C=2). Checked C in {2,5,10,20,50} against held-out
-    # text; C=10 gives confident-but-not-overconfident scores (~0.6 on
-    # clear matches) without inflating confidence on ambiguous/unrelated text.
+    print(f"Encoding {len(texts)} examples with MiniLM-v2...")
+    features = np.stack([text_encoder.encode(t) for t in texts]).astype(np.float32)
+
+    # C=10: carried over from the TF-IDF version's empirical tuning (see
+    # git history) as the starting point; re-checked against held-out
+    # text after switching to MiniLM features — still gives confident-but-
+    # not-overconfident scores without inflating confidence on ambiguous text.
     classifier = LogisticRegression(max_iter=2000, C=10.0)
     classifier.fit(features, labels)
 
     train_accuracy = classifier.score(features, labels)
-    print(f"Training accuracy on {len(texts)} examples, {len(CATEGORIES)} categories: {train_accuracy:.1%}")
+    print(f"Training accuracy on {len(texts)} examples, {len(CATEGORIES)} categories (MiniLM-v2 features): {train_accuracy:.1%}")
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")

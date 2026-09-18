@@ -1,16 +1,29 @@
-"""Train the scam-call classifier and export it to ONNX.
+"""Train the scam-call classification head on MiniLM-v2 embeddings, and
+export it to ONNX.
 
 Same local, no-AI-Hub-account-needed build step as the other two
 classifiers — run it once:
 
     python -m src.call_shield.train_classifier
 
-TF-IDF + Logistic Regression on the labeled call-transcript dataset in
-data.py, exported to ONNX by hand (src/pipeline/onnx_export.py, not
-skl2onnx's default converter — see that module's docstring for why),
-registered as its own Task on the shared NXTSightEngine. Call transcripts
-are much longer and more varied than a single SMS, so this uses a larger
-vocabulary cap than the other two classifiers' training scripts.
+MiniLM-v2 embeddings (src/pipeline/text_encoder.py) + Logistic Regression
+on the labeled call-transcript dataset in data.py, exported to ONNX by
+hand (src/pipeline/onnx_export.py, not skl2onnx's default converter — see
+that module's docstring for why), registered as its own Task on the
+shared NXTSightEngine.
+
+Honest limitation worth knowing: MiniLM-v2 (matching AI Hub's own spec)
+truncates to 128 tokens. A short SMS-length scam message fits easily; a
+multi-turn call transcript often doesn't — the classification decision
+only "sees" the first ~100 words of a long call. The `reason` field's
+"which line triggered this" quoting is unaffected (it still runs the TF-
+IDF explanation vocabulary against the *full* transcript, not the
+truncated one) — only the classification decision itself is subject to
+this limit.
+
+A TF-IDF vectorizer is still fit here too — not for the decision anymore,
+only to generate top_terms.json, the vocabulary classifier.py quotes when
+explaining which line/words triggered a verdict.
 
 Also saves the fitted classifier itself (classifier.joblib) and isolates
 the ONNX export in its own try/except — see the identical note in
@@ -26,6 +39,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
 from src.call_shield.data import TRAINING_DATA
+from src.pipeline import text_encoder
 from src.pipeline.onnx_export import export_logistic_regression
 
 ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
@@ -39,13 +53,18 @@ def main():
     vectorizer = TfidfVectorizer(
         ngram_range=(1, 2), min_df=1, sublinear_tf=True, stop_words="english"
     )
-    features = vectorizer.fit_transform(texts).toarray().astype(np.float32)
+    tfidf_features = vectorizer.fit_transform(texts).toarray().astype(np.float32)
+    explanation_classifier = LogisticRegression(max_iter=2000, C=5.0)
+    explanation_classifier.fit(tfidf_features, labels)
+
+    print(f"Encoding {len(texts)} examples with MiniLM-v2...")
+    features = np.stack([text_encoder.encode(t) for t in texts]).astype(np.float32)
 
     classifier = LogisticRegression(max_iter=2000, C=5.0)
     classifier.fit(features, labels)
 
     train_accuracy = classifier.score(features, labels)
-    print(f"Training accuracy on {len(texts)} examples: {train_accuracy:.1%}")
+    print(f"Training accuracy on {len(texts)} examples (MiniLM-v2 features): {train_accuracy:.1%}")
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     dump(vectorizer, ARTIFACTS_DIR / "vectorizer.joblib")
@@ -64,7 +83,7 @@ def main():
         )
 
     vocabulary = vectorizer.get_feature_names_out()
-    coefficients = classifier.coef_[0]
+    coefficients = explanation_classifier.coef_[0]
     order = np.argsort(coefficients)
     top_legit = [vocabulary[i] for i in order[:TOP_TERMS_PER_CLASS]]
     top_scam = [vocabulary[i] for i in order[::-1][:TOP_TERMS_PER_CLASS]]

@@ -19,12 +19,16 @@ build/
 dist/
 *.egg-info/
 
-# Model artifacts (large binaries — track via releases or LFS, not plain git)
+# Model artifacts (large binaries — track via releases or LFS, not plain git).
+# Small, task-specific classifier artifacts under src/*/artifacts/ (KBs, not
+# MBs) are NOT covered by this and stay committed as real evidence — only
+# the general-purpose model weights under models/ (tens of MBs) are excluded.
 models/**/*.onnx
 models/**/*.data
 models/**/*.bin
 models/**/*.pt
 models/**/*.qnn
+models/**/*.zip
 models/*.onnx
 models/*.bin
 models/*.pt

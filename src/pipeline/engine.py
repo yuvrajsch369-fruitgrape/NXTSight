@@ -1,19 +1,30 @@
 """NXTSight's shared on-device inference engine — one object, several jobs.
 
 A single NXTSightEngine instance is the only thing that ever touches ONNX
-Runtime, the Snapdragon NPU/QNN provider, or a TF-IDF vectorizer. The scam
-classifier, the spend categorizer, and the Call Shield classifier all call
-through this same engine object; none of those modules loads a model file
-or runs a session directly. What differs between jobs is registered as a
-Task — its own trained artifacts, its own confidence/format rules — not a
-second copy of the model-serving code.
+Runtime, the Snapdragon NPU/QNN provider, MiniLM-v2, or a TF-IDF
+vectorizer. The scam classifier, the spend categorizer, and the Call
+Shield classifier all call through this same engine object; none of those
+modules loads a model file or runs a session directly. What differs
+between jobs is registered as a Task — its own trained artifacts, its own
+confidence/format rules — not a second copy of the model-serving code.
 
 This mirrors how you'd serve several prompts through one LLM: one engine,
-one execution path (text_guard -> vectorize -> runtime.create_inference_session,
+one execution path (text_guard -> encode -> runtime.create_inference_session,
 itself QNN-aware) with per-task logic layered on top of its output rather
 than duplicated underneath it. Each task prefers its ONNX export (the
 QNN/CPU-aware path) but falls back to calling its trained scikit-learn
 model directly if that export is missing — see _ensure_loaded() below.
+
+Classification runs on MiniLM-v2 sentence embeddings (src/pipeline/
+text_encoder.py) — one shared, general-purpose encoder every task's
+classification head sits on top of — not the TF-IDF vectors it used to.
+Each task still fits and keeps its own TF-IDF vectorizer too, but purely
+as an explanation signal now (vocabulary_terms() below, used to quote
+"which words triggered this" in a reason string): a dense embedding
+drives a better-informed decision, but it isn't the kind of thing you can
+point at and say "these are the words that mattered" the way an
+interpretable bag-of-words vector is. Two different jobs, two different
+representations of the same text, on purpose.
 """
 
 import logging
@@ -24,6 +35,7 @@ from typing import Union
 import numpy as np
 from joblib import load
 
+from src.pipeline import text_encoder
 from src.pipeline.runtime import create_inference_session
 from src.pipeline.text_guard import unanalyzable_reason
 
@@ -126,9 +138,9 @@ class NXTSightEngine:
 
         task = self._tasks[task_name]
         try:
-            vectorizer, (mode, model) = self._ensure_loaded(task_name)
+            _vectorizer, (mode, model) = self._ensure_loaded(task_name)
             cleaned = text.strip()[: task.max_chars]
-            vector = vectorizer.transform([cleaned]).toarray().astype(np.float32)
+            vector = text_encoder.encode(cleaned).reshape(1, -1).astype(np.float32)
             if mode == "onnx":
                 input_name = model.get_inputs()[0].name
                 labels, probabilities = model.run(["label", "probabilities"], {input_name: vector})

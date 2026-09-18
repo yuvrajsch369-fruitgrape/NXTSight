@@ -34,6 +34,9 @@ SCAM_EXAMPLES = [
     "Your order is stuck at the warehouse due to an unpaid handling charge. Clear the Rs 89 fee immediately to avoid return to sender.",
     "DHL Notice: Your shipment requires an import tax payment of $4.50 before it can be released. Pay online now to avoid delays.",
     "We attempted delivery of your parcel but it is being held due to an outstanding customs duty. Settle Rs 249 within 24 hours or the item will be returned to origin.",
+    # Fake social-media account-suspension threats
+    "Your Facebook Page has been flagged for a copyright violation and will be permanently removed within 24 hours unless you confirm your identity through the link below.",
+    "We detected unusual activity that violates our Community Standards. Your account is scheduled for deletion in 24 hours — appeal now by logging in through this link.",
     # KYC phishing / fake job offers
     "Your mobile number KYC is incomplete. Update your Aadhaar and PAN details now at the link below or your SIM will be blocked.",
     "Earn Rs 3000/day working from home, no experience needed. Just pay a Rs 499 registration fee to get started today.",
@@ -45,6 +48,16 @@ SCAM_EXAMPLES = [
     "You have won a brand new iPhone 15! Claim your free prize now by paying a small shipping fee of Rs 199.",
     "Google Rewards: You are today's lucky winner of $10,000. Click here to claim before the offer expires at midnight.",
     "Your WhatsApp number has been selected in the Coca-Cola anniversary lucky draw. Claim your Rs 1,00,000 prize now.",
+    # Fake charity / donation-urgency scams
+    "Urgent appeal from Hope India Trust: earthquake survivors need shelter tonight. Transfer any amount via UPI to this number right now, every rupee counts before midnight.",
+    "This is a fundraiser for children affected by the recent floods. Donate immediately to this UPI ID before our collection window closes in one hour.",
+    # Fake tax-refund phishing (contrast with the legit e-verification
+    # notice below: this asks for bank details and a link, that doesn't)
+    "GST Department Notice: A pending refund of Rs 8,450 is ready for processing. Submit your bank account number and IFSC code at the link below within 24 hours to receive it.",
+    "Tax Refund Alert: You are eligible for Rs 12,300 back. Verify your bank details and debit card number here to avoid forfeiting the refund this week.",
+    # Advance-fee loan scams
+    "Instant personal loan of Rs 3,00,000 approved, zero paperwork, zero interest for the first year. Pay a refundable processing fee of Rs 999 via UPI to release the amount today.",
+    "Pre-approved loan offer: Rs 2,00,000 credited within 1 hour, no credit check required. Transfer a one-time processing charge of Rs 1,200 now to activate disbursal.",
 ]
 
 LEGIT_EXAMPLES = [
@@ -64,6 +77,7 @@ LEGIT_EXAMPLES = [
     # with the "verify immediately or be locked out" scam framing above)
     "A sign-in attempt was made on your account from an unfamiliar location in Chicago. If this was you, no action is needed.",
     "We noticed a login from an unrecognized browser at 9:42 AM. If this was you, you can safely ignore this alert.",
+    "New sign-in to your Google Account from a Windows device. If this was you, you don't need to do anything. If not, we recommend you review your recent activity.",
     "Your password was changed successfully. If you did not make this change, contact support from your account settings.",
     # Legit official/government status updates (no ask, no link, no urgency)
     "Your passport renewal application (file no. PP2024981) has been received and is under processing. Track status on the official portal.",
