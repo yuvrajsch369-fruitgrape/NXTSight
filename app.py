@@ -27,6 +27,12 @@ from pathlib import Path
 # force fully-offline loading everywhere in one shot.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Purely cosmetic, but a real, confirmed warning otherwise: HuggingFace's
+# tokenizers library warns on stderr about disabling its internal thread
+# parallelism after Streamlit/uvicorn forks a worker process. Harmless
+# either way (correctness is unaffected), just noisy — this is the
+# documented way to pick one explicitly rather than let it warn about it.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from src.pipeline import preflight
 

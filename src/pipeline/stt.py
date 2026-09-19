@@ -86,10 +86,16 @@ def extract_text_from_audio(path) -> str:
 
     try:
         audio = _load_wav_as_float32(path)
-    except wave.Error as e:
-        return f"Error: '{path}' is not a readable WAV file (corrupted or unsupported format) ({e})"
+    except (wave.Error, EOFError) as e:
+        # EOFError alongside wave.Error, not just the latter: the stdlib
+        # `wave` module raises a bare EOFError (with an empty message) for
+        # a file too short to even contain a valid header — a corrupted or
+        # truncated WAV in practice, same user-facing story either way.
+        detail = str(e) or type(e).__name__
+        return f"Error: '{path}' is not a readable WAV file (corrupted or unsupported format) ({detail})"
     except Exception as e:
-        return f"Error: could not read '{path}' ({e})"
+        detail = str(e) or type(e).__name__
+        return f"Error: could not read '{path}' ({detail})"
 
     if len(audio) == 0:
         return f"Error: '{path}' contains no audio data"

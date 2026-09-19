@@ -5,10 +5,22 @@ against (data/samples/receipt_*.png): a UPI confirmation, a printed
 receipt, a handwritten note, a blurry photo, and a multi-line-item bill.
 Real, documented outcomes — 3 succeed, 2 correctly decline rather than
 guess a wrong number. See README for the honest limitations this surfaced.
+
+Two of these samples (the multi-item bill and the handwritten note) OCR
+differently depending on which backend is actually active — AI Hub's
+compiled EasyOCR recognizer (src/pipeline/ocr_qai_hub.py) reads them more
+accurately than the local EasyOCR/PyTorch fallback does. Which one is
+active depends on whether the optional `qai_hub_models` extras are
+installed and the models exported (see README's Snapdragon/AI Hub
+section) — genuinely not the case on a plain `pip install -r
+requirements.txt`, confirmed by running this suite against a from-scratch
+clone. Those two tests branch on ocr_qai_hub.status() so the suite is
+honestly correct either way, rather than silently assuming one backend.
 """
 
 from pathlib import Path
 
+from src.pipeline import ocr_qai_hub
 from src.spend_categorizer.categorizer import categorize_transactions
 from src.spend_categorizer.receipt_parser import (
     build_transaction_text,
@@ -39,31 +51,45 @@ def test_printed_grocery_receipt_extracts_all_fields():
 
 
 def test_multi_item_bill_picks_the_total_not_a_line_item():
+    ai_hub_active, _ = ocr_qai_hub.status()
     result = process_receipt_screenshot(str(SAMPLES_DIR / "receipt_multi_item_bill.png"))
     assert result["ok"] is True
-    # Real behavior since switching OCR backends (AI Hub's compiled EasyOCR
-    # models, src/pipeline/ocr_qai_hub.py): this recognizer splits the
-    # 3-word brand name across three separate lines ("COFFEE"/"CAFE"/"DAY")
-    # rather than two, so the merchant-merge heuristic (which stitches at
-    # most two lines) only catches the first two. Documented, not hidden.
-    assert result["merchant"] == "COFFEE CAFE"
-    # This is actually *more* accurate than before: the old OCR engine
-    # split "933.50" across two lines and dropped the cents (933.0). The
-    # new one reads it as one clean line, cents included.
-    assert result["amount"] == 933.5
+
+    if ai_hub_active:
+        # AI Hub's compiled EasyOCR recognizer splits the 3-word brand name
+        # across three separate lines ("COFFEE"/"CAFE"/"DAY") rather than
+        # two, so the merchant-merge heuristic (which stitches at most two
+        # lines) only catches the first two. It also reads "933.50" as one
+        # clean line — more accurate than the fallback below, cents included.
+        assert result["merchant"] == "COFFEE CAFE"
+        assert result["amount"] == 933.5
+    else:
+        # Local EasyOCR/PyTorch fallback: reads the full two-line brand
+        # name correctly, but splits "933.50" across two lines and drops
+        # the cents. Both are real, known OCR-engine-specific quirks,
+        # documented rather than hidden either way.
+        assert result["merchant"] == "CAFE COFFEE DAY"
+        assert result["amount"] == 933.0
 
 
-def test_handwritten_note_now_reads_correctly():
+def test_handwritten_note_reads_per_active_ocr_backend():
+    ai_hub_active, _ = ocr_qai_hub.status()
     result = process_receipt_screenshot(str(SAMPLES_DIR / "receipt_handwritten_note.png"))
-    # This used to decline: the old OCR engine misread the handwritten
-    # "500" as "S00" (digit 5 -> letter S), an unparseable non-number, so
-    # the parser correctly refused to guess. AI Hub's compiled EasyOCR
-    # recognizer (src/pipeline/ocr_qai_hub.py) reads this handwriting
-    # correctly — a genuine accuracy improvement, not a bug to route
-    # around. The "never invent a number" guarantee this sample used to
-    # exercise is still covered by test_blurry_photo_declines_rather_than_hallucinating.
-    assert result["ok"] is True
-    assert result["amount"] == 500.0
+
+    if ai_hub_active:
+        # AI Hub's compiled EasyOCR recognizer reads this handwritten "500"
+        # correctly — a genuine accuracy improvement over the fallback below.
+        assert result["ok"] is True
+        assert result["amount"] == 500.0
+    else:
+        # Local EasyOCR/PyTorch fallback misreads the handwritten "500" as
+        # "S00" (digit 5 -> letter S), an unparseable non-number, so the
+        # parser correctly refuses to guess rather than inventing a value.
+        # The "never invent a number" guarantee itself is also covered,
+        # backend-independently, by
+        # test_blurry_photo_declines_rather_than_hallucinating below.
+        assert result["ok"] is False
+        assert "couldn't find a clear amount" in result["message"].lower()
 
 
 def test_blurry_photo_declines_rather_than_hallucinating():

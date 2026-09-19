@@ -300,7 +300,10 @@ NXTSight/
 │   │   ├── preflight.py      # Python-version + missing-dependency checks (shared by app.py and check_setup.py)
 │   │   ├── stt.py            # extract_text_from_audio(): WAV recording -> raw text (Whisper, ffmpeg-free)
 │   │   ├── payment_pause.py  # feature 5's logic: in-memory flag log + the "recent flag pauses a payment" rule
-│   │   └── onnx_export.py    # hand-built ONNX export (Gemm->Softmax->ArgMax) — AI Hub rejects skl2onnx's default output
+│   │   ├── onnx_export.py    # hand-built ONNX export (Gemm->Softmax->ArgMax) — AI Hub rejects skl2onnx's default output
+│   │   ├── ocr_qai_hub.py    # AI Hub-compiled EasyOCR detector+recognizer, via runtime.py's QNN/CPU path
+│   │   ├── text_encoder.py   # MiniLM-v2 shared text encoder (AI Hub-compiled), all 3 classification heads sit on top of this
+│   │   └── whisper_qai_hub.py # AI Hub-compiled Whisper-tiny encoder; decoder stays local, unmodified PyTorch
 │   ├── scam_detector/       # feature 1: screenshot OCR + scam classification
 │   │   ├── data.py               # labeled training examples
 │   │   ├── train_classifier.py   # local build step: trains + exports classifier.onnx
@@ -317,13 +320,18 @@ NXTSight/
 │       ├── train_classifier.py   # local build step: trains + exports classifier.onnx
 │       ├── classifier.py         # analyze_call(transcript) / analyze_call_recording(wav_path)
 │       └── artifacts/            # trained vectorizer.joblib, classifier.onnx, top_terms.json
-├── models/                  # exported/compiled AI-Hub model artifacts (OCR) for on-device NPU inference
+├── models/                  # exported/compiled AI-Hub model artifacts (OCR, MiniLM-v2, Whisper encoder) — gitignored, regenerate with the export_*.py scripts below
 ├── scripts/
 │   ├── check_setup.py                       # environment doctor — run before the app if unsure setup is complete
+│   ├── export_easyocr.py                    # local-only: export EasyOCR detector+recognizer to ONNX (no AI Hub account needed)
+│   ├── export_minilm.py                     # local-only: export MiniLM-v2 to ONNX (no AI Hub account needed)
+│   ├── export_whisper_encoder.py            # local-only: export Whisper-tiny's encoder (only) to ONNX (no AI Hub account needed)
 │   ├── aihub_profile_easyocr.py             # one-off: profile the OCR model on real Snapdragon hardware
 │   ├── aihub_compile_scam_classifier.py     # one-off: compile + profile the scam classifier for Snapdragon
 │   ├── aihub_compile_spend_categorizer.py   # one-off: compile + profile the spend categorizer for Snapdragon
-│   └── aihub_compile_call_shield.py         # one-off: compile + profile the Call Shield classifier for Snapdragon
+│   ├── aihub_compile_call_shield.py         # one-off: compile + profile the Call Shield classifier for Snapdragon
+│   ├── aihub_compile_minilm.py              # one-off: compile + profile MiniLM-v2 for Snapdragon
+│   └── aihub_compile_whisper_encoder.py     # one-off: compile + profile the Whisper-tiny encoder for Snapdragon
 ├── data/samples/            # sample scam/receipt screenshots, sample call recordings, sample transaction text
 ├── notebooks/               # exploration / model experimentation
 ├── tests/                   # unit tests — incl. test_engine.py (architecture), test_hardening.py (crash-proofing),
@@ -362,6 +370,17 @@ Proven, not just asserted — [tests/test_hardening.py](tests/test_hardening.py)
 Every package in `requirements.txt` is pinned to an exact version captured from a real working install — see the file's own comments for why each pin exists. Two real cross-package/platform bugs got caught and fixed this way, not just theorized about:
 - `qai-hub-models` requires plain `opencv-python`, which silently conflicts with the `opencv-python-headless` that `easyocr` needs (both packages install a `cv2` module at the same path; whichever installs second wins, non-deterministically). Fixed by moving `qai-hub-models` out of the base install entirely — it's only needed for one optional AI Hub CLI workflow, which has its own separate install instructions below.
 - `openai-whisper` declares its `numba` dependency with **no version constraint at all**, so pip picks whichever is newest — which needs a newer `llvmlite` than 0.43.0, the last version with an Intel-Mac wheel. Without an explicit pin, a clean install on an Intel Mac tries to compile `llvmlite` from source and fails outright. Reproduced twice on a genuinely fresh venv before fixing it with an explicit `numba==0.60.0` pin — see [Call Shield](#call-shield) above for the full story.
+
+### Full-system stress test — fresh clone, all fallbacks, concurrent load
+
+Beyond the per-feature testing described throughout this README, one deliberate end-to-end pass: a genuine `git clone` into a scratch directory with a brand-new venv (not this dev machine's already-configured one), every ONNX artifact for OCR/MiniLM-v2/Whisper temporarily removed at once to force all three fallback chains simultaneously, 10 genuinely concurrent requests across mixed endpoints, and the Streamlit UI driven end to end in a real browser. Real findings, fixed:
+
+- **A test-suite fragility, not a code bug**: two receipt-parser tests were implicitly pinned to AI Hub OCR's specific output, which isn't present on a plain `pip install -r requirements.txt` (the optional `qai_hub_models` extras and exported `.onnx` files aren't part of the base install or the git history). Fixed by making those two tests branch on `ocr_qai_hub.status()`, asserting the behavior that's actually correct for whichever OCR backend is genuinely active — confirmed passing in both configurations, not just the one this dev machine happens to have set up.
+- **A confusingly empty error message**: the standard-library `wave` module raises a bare `EOFError` with no message text for a file too short to contain a valid header, producing `"...corrupted or unsupported format) ()"`. Fixed in `src/pipeline/stt.py` to fall back to the exception's type name when its message is empty.
+- **A cosmetic but real warning**: HuggingFace's `tokenizers` library warns on stderr about disabling internal parallelism after a fork (Streamlit/uvicorn's worker model triggers this). Silenced with `TOKENIZERS_PARALLELISM=false`, set alongside the offline env vars at the top of `app.py`/`backend/main.py`.
+- **A genuinely missing local export path**: OCR's `.onnx` files previously had no equivalent to `scripts/export_minilm.py` / `export_whisper_encoder.py` — only the full AI Hub CLI tool. Added [`scripts/export_easyocr.py`](scripts/export_easyocr.py) for a local-only, no-AI-Hub-account-needed export, verified to produce working (if differently packaged — self-contained rather than external-data-split) files.
+- **All three ONNX-optional fallback chains, forced simultaneously**: every feature (Scam Shield, Money Insight, Call Shield — text and audio) re-verified working correctly with OCR, MiniLM-v2, and Whisper's compiled models all absent at once, not just individually. Full 148-test suite passes in that state.
+- **10 concurrent requests, mixed endpoint types** (OCR, MiniLM classification, Whisper transcription, categorization, status) run genuinely in parallel against the live backend: no crashes, no corrupted responses, no hang — the shared `NXTSightEngine` singleton handles concurrent access safely.
 
 ### What happens on a different machine
 
