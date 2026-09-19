@@ -1,6 +1,6 @@
 # NXTSight
 
-Built for Qualcomm's Snapdragon AI Lab Build & Present Challenge.
+Built for Snapdragon-powered HP PCs, it started as a solo entry for Qualcomm's Snapdragon AI Lab Build & Present Challenge, running fully on-device.
 
 NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. On a Snapdragon PC it runs on the Hexagon NPU through Qualcomm's QNN execution provider; everywhere else it falls back to CPU automatically. Same code, same result, either way.
 
@@ -51,7 +51,7 @@ These aren't estimates — each one went through a real compile job and a real p
 - **EasyOCR's own architecture** — open source, the base the AI Hub-compiled detector and recognizer come from.
 - **scikit-learn `LogisticRegression`** — the three classification heads (scam / spend / call) are trained locally on hand-labeled data, then hand-exported to ONNX and compiled through AI Hub. These aren't from any model zoo; they're NXTSight's own, sitting on top of MiniLM's embeddings.
 
-## How OCR, ONNX, QNN, NPU, and CPU actually work together
+## The On-Device Pipeline
 
 Every model in NXTSight — OCR, the MiniLM encoder, the Whisper encoder, all three classifier heads — loads through exactly one function: `runtime.create_inference_session()`. That function checks `onnxruntime.get_available_providers()` once, at startup. If Qualcomm's QNN provider shows up (a Snapdragon PC with `onnxruntime-qnn` installed), every session prefers it and inference runs on the Hexagon NPU. If it doesn't, sessions fall back to plain CPU — no flag to set, no separate build, same code path either way. This is checked live, not assumed: the app shows which path is active on screen every time it starts.
 
