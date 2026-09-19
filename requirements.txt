@@ -47,6 +47,22 @@ pandas==2.2.3
 # anywhere out of the box. torch/opencv pinned explicitly (not just left to
 # easyocr's own resolution) so every platform gets the exact combination
 # this was tested against, not whatever's newest that day.
+#
+# IMPORTANT for judges on a real Snapdragon Windows PC: torch==2.2.2 (like
+# every torch version checked, through 2.11.0) has NO win_arm64 wheel on
+# PyPI — confirmed directly with `pip download --platform win_arm64`, not
+# assumed. If your Python is the native ARM64 build, `pip install -r
+# requirements.txt` will hard-fail on this exact line ("no matching
+# distribution"). Fix: install the regular 64-bit (x64/AMD64) Python
+# instead — Windows 11 on ARM runs it via built-in emulation, torch's
+# win_amd64 wheel installs and runs fine, and Qualcomm ships an
+# onnxruntime-qnn win_amd64 wheel too (confirmed downloadable), so QNN/NPU
+# access should still work from an x64 Python process — genuinely NOT
+# verified end-to-end on physical Snapdragon hardware from this dev
+# machine, unlike the AI Hub compile+profile jobs elsewhere in this
+# project, which did run on real Snapdragon silicon (in Qualcomm's cloud
+# device farm, not locally). Test this combination on real hardware before
+# relying on it live if at all possible.
 pillow==11.3.0
 easyocr==1.7.2
 torch==2.2.2
