@@ -2,7 +2,7 @@
 
 Built for Snapdragon-powered HP PCs, it started as a solo entry for Qualcomm's Snapdragon AI Lab Build & Present Challenge, running fully on-device.
 
-NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. On a Snapdragon PC it runs on the Hexagon NPU through Qualcomm's QNN execution provider; everywhere else it falls back to CPU automatically. Same code, same result, either way.
+NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. On a Snapdragon PC it runs on the Hexagon NPU through Qualcomm's QNN execution provider, everywhere else it falls back to CPU automatically. Same code, same result, either way.
 
 ## The problem
 
