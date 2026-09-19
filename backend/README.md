@@ -1,8 +1,8 @@
 # NXTSight Backend
 
-One FastAPI process exposing all five NXTSight features over HTTP, built on top of the same shared on-device engine the Streamlit demo already uses — not a second implementation next to it.
+A FastAPI service exposing all five NXTSight features over HTTP, built on the exact same shared engine the Streamlit demo uses — not a second implementation sitting next to it.
 
-**Try this first, if you only try one thing:** start the server, then run the "full scenario" curl sequence near the bottom of this file. It flags a real scam message, then shows a simulated payment attempt getting paused because of it — the actual pitch, end to end, over real HTTP calls.
+**If you only try one thing, try this:** start the server, then run the Payment Pause scenario near the bottom of this file. It flags a real scam message, then shows a simulated payment attempt getting paused because of it — over real HTTP calls, not a UI mock.
 
 ## Run it
 
@@ -10,83 +10,49 @@ One FastAPI process exposing all five NXTSight features over HTTP, built on top 
 uvicorn backend.main:app --port 8000
 ```
 
-Then either:
-- Open **http://localhost:8000/docs** for interactive Swagger docs (click "Try it out" on any endpoint), or
-- Use the curl commands below.
+Then either open **http://localhost:8000/docs** for interactive Swagger docs, or use the curl commands below. If a dependency is missing, the server prints exactly which one and refuses to start, rather than failing mid-request with a buried `ImportError`.
 
-If a dependency is missing, the server prints exactly which one and refuses to start — it does not fail with a buried `ImportError` mid-request.
+## Endpoints
 
----
+| Feature | Endpoint(s) | Engine task |
+|---|---|---|
+| Scam Shield | `POST /scam-shield/text`, `POST /scam-shield/screenshot` | `scam_detection` |
+| Money Insight | `POST /money-insight/transactions` | `spend_categorization` |
+| Screenshot Spend Scanner | `POST /spend-scanner/screenshot` | `spend_categorization` |
+| Call Shield | `POST /call-shield/transcript`, `POST /call-shield/recording` | `call_shield` |
+| Payment Pause | `GET /payment-pause/log`, `POST /payment-pause/confirm`, `POST /payment-pause/reset` | *(no model — pure logic)* |
+| Status | `GET /status` | — |
 
-## What was reused vs. what's new here
+Every ML-backed route registers its own `Task` on the same `NXTSightEngine` instance ([`src/pipeline/engine.py`](../src/pipeline/engine.py)) — none of them loads a model file or opens an ONNX Runtime session directly. All three classifiers (scam, spend, call) run on MiniLM-v2 embeddings under the hood, each with its own small trained head on top; see the main [README](../README.md#the-ai-models) for how that's wired.
 
-Requirements 1–5 below describe infrastructure that **already existed and was already tested and audited** before this backend was built: `src/pipeline/engine.py` (the shared inference engine), `src/pipeline/runtime.py` (QNN/CPU auto-detection), `src/pipeline/network_guard.py` (offline proof), `src/pipeline/ocr.py`, and the three trained classifiers — all already covered by 137 passing tests, and all three classifiers already genuinely compiled and profiled on real Snapdragon X Elite hardware via Qualcomm AI Hub (see the main [README.md](../README.md#snapdragon--qualcomm-ai-hub) for those job URLs and numbers).
+Call Shield and Payment Pause are both scoped honestly: `/call-shield/recording` transcribes a WAV file on-device and analyzes the transcript, but this backend can't intercept a live phone call — that needs telephony-level OS integration a local server doesn't have. `/payment-pause/confirm` simulates a payment attempt against an in-memory flag log; it doesn't and can't intercept a real UPI or banking app.
 
-**What's actually new in this pass:** the `backend/` folder itself (this FastAPI service — Requirement 6), the ONNX-optional fallback in `engine.py` and the `classifier.joblib` saves in every `train_classifier.py` (Requirement 2's resilience clause), and this README (Requirement 7). Said plainly instead of presented as if built from scratch, because that's the honest version.
+## What `/status` actually proves
 
----
-
-## Requirement-by-requirement
-
-### Requirement 1 — provably Snapdragon-optimized, not just claimed
-
-`backend/main.py` calls `select_execution_providers()` from [`src/pipeline/runtime.py`](../src/pipeline/runtime.py) once, at process startup — not per-request:
-
-```python
-available = ort.get_available_providers()
-if QNN_PROVIDER in available:
-    providers = [(QNN_PROVIDER, {"backend_path": _QNN_BACKEND_PATH}), "CPUExecutionProvider"]
-    description = "Snapdragon NPU (ONNX Runtime QNN execution provider)"
-else:
-    providers = ["CPUExecutionProvider"]
-    description = "CPU (QNN execution provider not available on this machine)"
+```bash
+curl -s http://localhost:8000/status
 ```
 
-This is a real `onnxruntime.get_available_providers()` call, not a comment. `GET /status` surfaces the result:
-
-```
-$ curl -s http://localhost:8000/status
+```json
 {
   "execution_path": "CPU (QNN execution provider not available on this machine)",
   "network_isolated": true,
-  ...
+  "ai_hub_models": {
+    "ocr": {"active": true, "status": "..."},
+    "minilm_v2_text_encoder": {"active": true, "status": "..."},
+    "whisper_encoder": {"active": true, "status": "..."}
+  }
 }
 ```
 
-**Honest state on this dev machine (Intel Mac):** `onnxruntime-qnn` is a Windows-only package (see `requirements.txt`'s platform marker), so this always falls back to CPU here — that's the code correctly detecting reality, not a bug. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the NPU branch with zero changes. Separately — and this is real, not aspirational — all three classifiers plus the OCR detector/recognizer have already been compiled and profiled on **actual Snapdragon X Elite hardware** via Qualcomm AI Hub; see the main README for the job URLs.
+Two things behind that response are checked for real at startup, not assumed:
 
-### Requirement 2 — a real, locally-trained model, with a graceful ONNX-optional fallback
+- **Execution path** — `select_execution_providers()` ([`src/pipeline/runtime.py`](../src/pipeline/runtime.py)) calls `onnxruntime.get_available_providers()` once and picks QNN if it's there, CPU otherwise. On this dev machine (an Intel Mac) that's always CPU, since `onnxruntime-qnn` only ships for Windows — the code correctly reporting reality, not a bug. On a Snapdragon Windows PC, the same code takes the NPU branch with zero changes.
+- **Network isolation** — [`network_guard.py`](../src/pipeline/network_guard.py) patches `socket.socket.connect` to reject anything non-loopback, then makes a real connection attempt to `8.8.8.8:53` to confirm its own patch actually rejected it. If that check fails, the server refuses to start rather than silently serving requests over an unproven "offline" claim.
 
-Both classifiers are TF-IDF + Logistic Regression, trained on labeled examples in `data.py`, via `train_classifier.py`:
+## The ONNX-optional fallback, actually exercised
 
-```bash
-python -m src.scam_detector.train_classifier       # 68 labeled scam/legit examples
-python -m src.spend_categorizer.train_classifier    # 88 labeled examples, 11 categories
-```
-
-**The export step is isolated and fails gracefully, for real — not just described that way.** Every `train_classifier.py` now does this:
-
-```python
-dump(classifier, ARTIFACTS_DIR / "classifier.joblib")   # always saved — this never depends on ONNX
-try:
-    onnx_model = export_logistic_regression(classifier, features.shape[1])
-    (ARTIFACTS_DIR / "classifier.onnx").write_bytes(onnx_model.SerializeToString())
-except Exception as e:
-    print(f"WARNING: ONNX export failed/unavailable ({e}). classifier.joblib was still saved...")
-```
-
-And [`src/pipeline/engine.py`](../src/pipeline/engine.py)'s `_ensure_loaded()` prefers the ONNX/QNN-aware path but falls back to calling the raw scikit-learn model directly if `classifier.onnx` is missing:
-
-```python
-if onnx_path.exists():
-    self._sessions[task_name] = ("onnx", session)          # Requirement 1's path
-elif joblib_path.exists():
-    logger.warning("No classifier.onnx for task '%s' — falling back to the trained "
-                    "scikit-learn model directly...", task_name)
-    self._sessions[task_name] = ("sklearn", load(joblib_path))
-```
-
-**Proven live, not just claimed** — `classifier.onnx` was temporarily removed for the scam classifier and a real request run through it:
+Every classifier prefers its `classifier.onnx` through ONNX Runtime, but falls back to calling the trained `classifier.joblib` directly if the ONNX file is missing — proven, not just described:
 
 ```
 $ mv src/scam_detector/artifacts/classifier.onnx /tmp/classifier.onnx.bak
@@ -95,69 +61,19 @@ $ python3 -c "from src.scam_detector.classifier import classify_scam; \
 [NXTSight] No classifier.onnx for task 'scam_detection' — falling back to the trained
 scikit-learn model directly (no ONNX Runtime / QNN acceleration for this task until
 it's re-exported).
-{'is_scam': True, 'confidence': 0.564, 'reason': "Contains phrases commonly seen in scams: ..."}
+{'is_scam': True, 'confidence': 0.863, 'reason': "Contains phrases commonly seen in scams: 'hours', 'verify', 'click', 'unless'."}
 ```
 
-Confidence **0.564** — identical to the ONNX path's result on the same input, restored right after. The fallback isn't a degraded approximation; it's the same math, just without ONNX Runtime / QNN in the loop.
-
-**Honest state in this environment:** ONNX export tooling (`onnx` package) **is** installed here, so it didn't actually fail on its own — the test above was performed by deliberately removing the already-exported file to exercise the exact code path a genuinely missing `onnx` package would trigger, since that's a faithful, honest way to prove the fallback without breaking this venv's real install.
-
-### Requirement 3 — real OCR, never crashes
-
-[`src/pipeline/ocr.py`](../src/pipeline/ocr.py) wraps EasyOCR (`easyocr.Reader(["en"])`), with every failure mode returning a clear string instead of raising:
-
-```
-$ curl -s -X POST http://localhost:8000/scam-shield/screenshot -F "file=@/tmp/garbage.png"
-{"detail":"Error: '/tmp/garbage.png' is not a readable image (corrupted or unsupported format)"}
-```
-HTTP 422, not a 500 or a stack trace.
-
-### Requirement 4 — five thin features, one shared engine
-
-| Feature | Endpoint(s) | Module | Engine task |
-|---|---|---|---|
-| Scam Shield | `POST /scam-shield/text`, `POST /scam-shield/screenshot` | `src/scam_detector/classifier.py` | `scam_detection` |
-| Money Insight | `POST /money-insight/transactions` | `src/spend_categorizer/categorizer.py` | `spend_categorization` |
-| Screenshot Spend Scanner | `POST /spend-scanner/screenshot` | `src/spend_categorizer/receipt_parser.py` (reuses `ocr.py`, feeds `categorizer.py`) | `spend_categorization` |
-| Call Shield | `POST /call-shield/transcript`, `POST /call-shield/recording` | `src/call_shield/classifier.py` | `call_shield` |
-| Payment Pause | `GET /payment-pause/log`, `POST /payment-pause/confirm`, `POST /payment-pause/reset` | `src/pipeline/payment_pause.py` | *(pure logic — no model)* |
-
-Every one of the four ML-backed features registers its own `Task` on the exact same `NXTSightEngine` instance ([`src/pipeline/engine.py`](../src/pipeline/engine.py)) — none of them loads a model file or opens an ONNX Runtime session itself. **Call Shield is honestly scoped**: `POST /call-shield/recording` transcribes a WAV *file* on-device first (real Whisper STT), then runs the same transcript analysis as `/call-shield/transcript` — this backend does not and cannot intercept a live phone call; that would need phone/telephony-level OS integration outside a local server's reach. **Payment Pause is honestly scoped** too: `/payment-pause/confirm` simulates a payment attempt against an in-memory flag log; it does not and cannot intercept a real UPI/banking app.
-
-### Requirement 5 — proven offline, not just asserted
-
-At import time, before a single route is registered:
-
-```python
-network_guard.install()
-try:
-    network_guard.verify_blocked()
-except Exception as exc:
-    print(f"FATAL: network isolation could not be verified ({exc}). Refusing to start...")
-    raise SystemExit(1)
-```
-
-[`src/pipeline/network_guard.py`](../src/pipeline/network_guard.py) patches `socket.socket.connect` to reject any non-loopback address, then `verify_blocked()` makes a **real** connection attempt to `8.8.8.8:53` and confirms its own patch rejected it. If that check ever failed — meaning offline isolation genuinely isn't working — **the server would refuse to start at all**, not just log a warning. `GET /status` reports the result of that real startup check.
-
-### Requirement 6 — one clean, documented API
-
-This file, plus **http://localhost:8000/docs** (FastAPI's auto-generated interactive Swagger UI — try any endpoint from the browser, no curl needed) and **http://localhost:8000/openapi.json** (the machine-readable schema). 10 endpoints total, listed above and demonstrated below.
-
-### Requirement 7 — this README
-
-You're reading it.
-
----
-
-## Try every endpoint yourself
-
-Real output from a real run of this exact server is captured throughout this file and in the main [README.md](../README.md); the commands below reproduce it.
-
-### Status (try this first)
+Same confidence score as the ONNX path on the same input — the fallback is the same math, just without ONNX Runtime or QNN in the loop. OCR and speech-to-text have their own equivalent fallbacks (AI Hub-compiled model → local PyTorch model), and every failure mode returns a plain string instead of crashing:
 
 ```bash
-curl -s http://localhost:8000/status
+curl -s -X POST http://localhost:8000/scam-shield/screenshot -F "file=@/tmp/garbage.png"
+# {"detail":"Error: '/tmp/garbage.png' is not a readable image (corrupted or unsupported format)"}
 ```
+
+That's a 422, not a 500 or a raw stack trace.
+
+## Try every endpoint yourself
 
 ### Scam Shield
 
@@ -221,14 +137,12 @@ curl -s http://localhost:8000/payment-pause/log
 curl -s -X POST http://localhost:8000/payment-pause/confirm
 ```
 
-Step 5 is the actual pitch: a scam message flagged moments ago automatically pauses the next payment attempt, with what/when/why shown back — over a real HTTP call, not a UI mock.
+Step 5 is the actual pitch: a scam message flagged moments ago automatically pauses the next payment attempt, with what/when/why shown back.
 
----
-
-## Automated tests
+## Tests
 
 ```bash
 python -m pytest tests/test_backend.py -v
 ```
 
-11 tests, hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real STT, no mocks. Part of the full suite (`python -m pytest`, 148 tests total).
+11 tests hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real speech-to-text, no mocks. Part of the full suite (`python -m pytest`, 148 tests total).
