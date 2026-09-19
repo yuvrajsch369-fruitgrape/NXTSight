@@ -12,7 +12,9 @@ NXTSight addresses both. It reads a suspicious message and tells you whether it 
 
 ## Where this sits next to Norton
 
-Gen Digital, Norton's parent company, already ships an AI scam detector called Genie inside Norton 360 — it's real, it's live globally, and it's a genuine competitor in this space. But Genie's own India page says nothing about UPI-specific fraud, fake KYC messages, digital-arrest call scams, or courier-customs fee scams, and Gen Digital's own numbers show its strength sitting in North America and Europe, not India. That's the gap NXTSight is built for: not a bigger scam detector in general, but depth in exactly the fraud patterns and payment rails that dominate the Indian market, running fully on-device rather than phoning a server for every check. Gen Digital has already shipped a chip-specific partnership before — Norton Deepfake Protection, built around Intel's on-device silicon — which is the precedent for what a Snapdragon-specific, India-specific fraud engine could become.
+Gen Digital, Norton's parent company, already ships an AI scam detector called Genie inside Norton 360 — it's real, it's live globally, and it's a genuine competitor in this space. But Genie's own India page says nothing about UPI-specific fraud, fake KYC messages, digital-arrest call scams, or courier-customs fee scams, and Gen Digital's own numbers show its strength sitting in North America and Europe, not India. 
+
+That's the gap NXTSight is built for: depth in exactly the fraud patterns and payment rails that dominate the Indian market, running fully on-device rather than phoning a server for every check. Gen Digital has already shipped a chip-specific partnership before — Norton Deepfake Protection, built around Intel's on-device silicon — which is the precedent for what a Snapdragon-specific, India-specific fraud engine could become.
 
 ## What it does
 
