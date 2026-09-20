@@ -1,0 +1,459 @@
+/* NXTSight — shared dark theme.
+   Injected once per page via src/ui/theme.py::inject_theme(). Targets
+   Streamlit's data-testid hooks (stable across 1.6x) rather than
+   generated class names, and only ever restyles native Streamlit
+   widgets — nothing here replaces a functional element with custom
+   markup, so every st.* widget keeps working exactly as before. */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  --nxt-bg: #0a0e17;
+  --nxt-bg-alt: #0d1220;
+  --nxt-panel: #12172a;
+  --nxt-panel-hover: #161c33;
+  --nxt-border: rgba(255, 255, 255, 0.08);
+  --nxt-border-strong: rgba(255, 255, 255, 0.16);
+  --nxt-text: #f1f3f9;
+  --nxt-text-muted: #8b93a7;
+  --nxt-violet: #7c5cff;
+  --nxt-cyan: #22d3ee;
+  --nxt-gradient: linear-gradient(135deg, var(--nxt-violet), var(--nxt-cyan));
+  --nxt-green: #22c55e;
+  --nxt-amber: #f59e0b;
+  --nxt-red: #ef4444;
+  --nxt-blue: #60a5fa;
+  --nxt-radius: 16px;
+  --nxt-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- base canvas ---------- */
+
+.stApp {
+  background:
+    radial-gradient(circle at 12% -10%, rgba(124, 92, 255, 0.16), transparent 45%),
+    radial-gradient(circle at 90% 0%, rgba(34, 211, 238, 0.10), transparent 40%),
+    radial-gradient(circle at 50% 110%, rgba(124, 92, 255, 0.08), transparent 50%),
+    var(--nxt-bg);
+  background-attachment: fixed;
+  color: var(--nxt-text);
+}
+
+html, body, [class^="css"] {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+h1, h2, h3, h4, .nxt-font-display {
+  font-family: 'Space Grotesk', 'Inter', sans-serif !important;
+  letter-spacing: -0.01em;
+}
+
+/* Fade the whole page content in on load instead of popping in. */
+[data-testid="stAppViewContainer"] .main .block-container {
+  animation: nxt-fade-in 0.5s ease both;
+  padding-top: 2rem;
+}
+
+@keyframes nxt-fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* header bar Streamlit reserves at the top — make it blend in */
+[data-testid="stHeader"] {
+  background: transparent;
+}
+
+/* ---------- scrollbar ---------- */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--nxt-border-strong);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(124, 92, 255, 0.4); }
+
+/* ---------- hero header ---------- */
+
+.nxt-hero {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 1.6rem 1.8rem;
+  margin-bottom: 1.2rem;
+  border-radius: var(--nxt-radius);
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.14), rgba(34, 211, 238, 0.08));
+  border: 1px solid var(--nxt-border);
+  box-shadow: var(--nxt-shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.nxt-hero::before {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  background: conic-gradient(from 0deg, rgba(124, 92, 255, 0.10), rgba(34, 211, 238, 0.10), rgba(124, 92, 255, 0.10));
+  animation: nxt-spin 18s linear infinite;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+@keyframes nxt-spin { to { transform: rotate(360deg); } }
+
+.nxt-hero-icon {
+  font-size: 2.6rem;
+  line-height: 1;
+  animation: nxt-float 3.4s ease-in-out infinite;
+  filter: drop-shadow(0 6px 16px rgba(124, 92, 255, 0.45));
+  z-index: 1;
+}
+
+@keyframes nxt-float {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50%      { transform: translateY(-9px) rotate(-3deg); }
+}
+
+.nxt-hero-text { z-index: 1; }
+
+.nxt-title {
+  margin: 0;
+  font-size: 2.1rem;
+  font-weight: 700;
+  background: var(--nxt-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.nxt-subtitle {
+  margin: 0.3rem 0 0 0;
+  color: var(--nxt-text-muted);
+  font-size: 0.98rem;
+}
+
+/* smaller hero used on secondary pages (Future Vision) */
+.nxt-hero.nxt-hero-compact { padding: 1.2rem 1.5rem; }
+.nxt-hero.nxt-hero-compact .nxt-hero-icon { font-size: 2rem; }
+.nxt-hero.nxt-hero-compact .nxt-title { font-size: 1.6rem; }
+
+/* ---------- generic glass card ---------- */
+
+.nxt-card {
+  background: var(--nxt-panel);
+  border: 1px solid var(--nxt-border);
+  border-radius: var(--nxt-radius);
+  padding: 1.1rem 1.3rem;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.nxt-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 40px rgba(124, 92, 255, 0.18);
+  border-color: var(--nxt-border-strong);
+}
+
+/* ---------- section labels used in place of st.subheader ---------- */
+
+.nxt-section {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.2rem 0 0.9rem 0;
+}
+
+.nxt-section-icon {
+  font-size: 1.5rem;
+  filter: drop-shadow(0 4px 10px rgba(124, 92, 255, 0.35));
+}
+
+.nxt-section-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* ---------- tabs ---------- */
+
+.stTabs [data-baseweb="tab-list"] {
+  gap: 6px;
+  background: var(--nxt-panel);
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid var(--nxt-border);
+}
+
+.stTabs [data-baseweb="tab"] {
+  height: 46px;
+  border-radius: 10px;
+  padding: 0 18px;
+  color: var(--nxt-text-muted);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+  background: var(--nxt-panel-hover);
+  color: var(--nxt-text);
+}
+
+.stTabs [aria-selected="true"] {
+  background: var(--nxt-gradient) !important;
+  color: #0a0e17 !important;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.35);
+}
+
+.stTabs [data-baseweb="tab-highlight"] { display: none; }
+.stTabs [data-baseweb="tab-border"] { display: none; }
+
+/* ---------- buttons ---------- */
+
+.stButton > button, .stDownloadButton > button {
+  border-radius: 10px;
+  border: 1px solid var(--nxt-border-strong);
+  background: var(--nxt-panel);
+  color: var(--nxt-text);
+  font-weight: 500;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.stButton > button:hover, .stDownloadButton > button:hover {
+  transform: translateY(-2px);
+  border-color: rgba(124, 92, 255, 0.5);
+  box-shadow: 0 8px 20px rgba(124, 92, 255, 0.22);
+  color: var(--nxt-text);
+}
+
+.stButton > button[kind="primary"] {
+  background: var(--nxt-gradient);
+  border: none;
+  color: #0a0e17;
+}
+
+.stButton > button[kind="primary"]:hover {
+  box-shadow: 0 10px 26px rgba(124, 92, 255, 0.4);
+}
+
+/* ---------- inputs ---------- */
+
+.stTextArea textarea, .stTextInput input, .stNumberInput input {
+  background: var(--nxt-panel) !important;
+  border: 1px solid var(--nxt-border) !important;
+  border-radius: 10px !important;
+  color: var(--nxt-text) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stTextArea textarea:focus, .stTextInput input:focus {
+  border-color: var(--nxt-violet) !important;
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.18) !important;
+}
+
+[data-testid="stFileUploaderDropzone"], [data-testid="stFileUploader"] section {
+  background: var(--nxt-panel) !important;
+  border: 1px dashed var(--nxt-border-strong) !important;
+  border-radius: var(--nxt-radius) !important;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+[data-testid="stFileUploaderDropzone"]:hover {
+  border-color: var(--nxt-violet) !important;
+  background: var(--nxt-panel-hover) !important;
+}
+
+div[role="radiogroup"] label {
+  background: var(--nxt-panel);
+  border: 1px solid var(--nxt-border);
+  border-radius: 999px;
+  padding: 4px 14px 4px 8px;
+  margin-right: 6px;
+  transition: all 0.2s ease;
+}
+
+div[role="radiogroup"] label:hover {
+  border-color: var(--nxt-violet);
+  background: var(--nxt-panel-hover);
+}
+
+[data-baseweb="select"] > div {
+  background: var(--nxt-panel) !important;
+  border-color: var(--nxt-border) !important;
+  border-radius: 10px !important;
+}
+
+/* audio recorder / player widgets */
+[data-testid="stAudioInput"], audio {
+  border-radius: var(--nxt-radius);
+}
+
+/* ---------- alerts (st.success / info / warning / error) ---------- */
+
+[data-testid="stAlert"], .stAlert {
+  border-radius: var(--nxt-radius) !important;
+  border: 1px solid var(--nxt-border) !important;
+  backdrop-filter: blur(6px);
+  animation: nxt-pop 0.35s ease both;
+}
+
+@keyframes nxt-pop {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* ---------- expander ---------- */
+
+[data-testid="stExpander"] {
+  background: var(--nxt-panel);
+  border: 1px solid var(--nxt-border) !important;
+  border-radius: var(--nxt-radius) !important;
+  overflow: hidden;
+}
+
+[data-testid="stExpander"] summary {
+  font-weight: 500;
+}
+
+/* ---------- metrics (Receipt Scanner amount/merchant/date) ---------- */
+
+[data-testid="stMetric"] {
+  background: var(--nxt-panel);
+  border: 1px solid var(--nxt-border);
+  border-radius: var(--nxt-radius);
+  padding: 0.9rem 1rem;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+[data-testid="stMetric"]:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 30px rgba(124, 92, 255, 0.16);
+}
+
+/* ---------- divider ---------- */
+
+hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--nxt-border-strong), transparent);
+  margin: 1.4rem 0;
+}
+
+/* ---------- table ---------- */
+
+[data-testid="stTable"] table, .stDataFrame {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* ---------- sidebar navigation ---------- */
+
+[data-testid="stSidebar"] {
+  background: var(--nxt-bg-alt);
+  border-right: 1px solid var(--nxt-border);
+}
+
+[data-testid="stSidebarNav"] {
+  padding-top: 0.6rem;
+}
+
+[data-testid="stSidebarNav"] a {
+  border-radius: 10px;
+  margin: 2px 8px;
+  transition: all 0.2s ease;
+}
+
+[data-testid="stSidebarNav"] a:hover {
+  background: var(--nxt-panel-hover);
+}
+
+[data-testid="stSidebarNav"] a[aria-current="page"] {
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.22), rgba(34, 211, 238, 0.08));
+  border-left: 3px solid var(--nxt-cyan);
+}
+
+.nxt-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.9rem 0.9rem 0.6rem 0.9rem;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 1.05rem;
+  border-bottom: 1px solid var(--nxt-border);
+  margin-bottom: 0.4rem;
+}
+
+.nxt-sidebar-brand span.nxt-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--nxt-green);
+  box-shadow: 0 0 8px var(--nxt-green);
+  animation: nxt-pulse 2s ease-in-out infinite;
+}
+
+@keyframes nxt-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+/* ---------- badge pills (execution path / AI Hub status) ---------- */
+
+.nxt-badge-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 0.4rem 0 1rem 0; }
+
+.nxt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: 1px solid var(--nxt-border);
+  background: var(--nxt-panel);
+}
+
+.nxt-badge.nxt-badge-npu {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.10);
+  color: #6ee7a3;
+}
+
+.nxt-badge.nxt-badge-cpu {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.10);
+  color: #93c5fd;
+}
+
+.nxt-badge.nxt-badge-safe {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.10);
+  color: #6ee7a3;
+}
+
+/* ---------- Future Vision long-form content ---------- */
+
+.nxt-vision h2 {
+  margin-top: 2.2rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--nxt-border);
+  background: var(--nxt-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
+}
+
+.nxt-vision h3 {
+  color: var(--nxt-cyan);
+  margin-top: 1.4rem;
+}
+
+.nxt-vision p { color: var(--nxt-text); line-height: 1.7; }
+
+.nxt-vision > p:first-of-type {
+  font-size: 1.15rem;
+  color: var(--nxt-text);
+  border-left: 3px solid var(--nxt-violet);
+  padding-left: 1rem;
+}

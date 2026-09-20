@@ -1,4 +1,4 @@
-"""NXTSight demo UI.
+"""NXTSight demo UI — dark-mode only, themed via src/ui/theme.py.
 
 A minimal local web app so the on-device pipeline can be tried live: drop
 a screenshot and see the scam verdict, paste transaction text (or scan a
@@ -83,6 +83,7 @@ from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
 from src.spend_categorizer.receipt_parser import process_receipt_screenshot
+from src.ui.theme import badge_row, hero, inject_theme, section, sidebar_brand
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "data" / "samples"
 
@@ -122,8 +123,8 @@ def _flag_once(session_key, source, reason, confidence):
     exact (source, reason) result is seen for this widget selection.
 
     Streamlit reruns the *entire* script on every interaction anywhere in
-    the app, not just the widget that changed. The Scam Screenshot Scanner
-    and the Call Shield audio path both analyze as soon as a file is
+    the app, not just the widget that changed. Scam Shield's screenshot
+    path and the Call Shield audio path both analyze as soon as a file is
     selected, with no separate "Analyze" button — so without this guard,
     clicking something unrelated (e.g. Payment Pause's own button) would
     silently re-run that analysis and add a duplicate flag every time.
@@ -134,20 +135,28 @@ def _flag_once(session_key, source, reason, confidence):
         st.session_state[session_key] = flag_key
 
 
+def _verdict_card(is_scam: bool, confidence: float, reason: str, scam_label: str, legit_label: str) -> None:
+    """A styled result card shared by Scam Shield and Call Shield — same
+    st.error/st.success/st.write calls as before, just grouped visually."""
+    with st.container(border=True):
+        if is_scam:
+            st.error(f"**{scam_label}** — {confidence * 100:.0f}% confidence")
+        else:
+            st.success(f"**{legit_label}** — {confidence * 100:.0f}% confidence")
+        st.write(reason)
+
+
 def _render_call_verdict(result, flag_session_key):
     if result["reason"].startswith("Couldn't analyze this"):
         st.warning(result["reason"])
-    elif result["is_scam"]:
-        st.error(f"**Likely a scam call** — {result['confidence'] * 100:.0f}% confidence")
-        st.write(result["reason"])
+        return
+    _verdict_card(result["is_scam"], result["confidence"], result["reason"], "Likely a scam call", "Looks like a legitimate call")
+    if result["is_scam"]:
         _flag_once(flag_session_key, "Call Shield", result["reason"], result["confidence"])
         st.caption(
             "Logged to **Payment Pause** — open that tab and a simulated payment attempt will "
             "run on its own in a few seconds and get paused on this flag."
         )
-    else:
-        st.success(f"**Looks like a legitimate call** — {result['confidence'] * 100:.0f}% confidence")
-        st.write(result["reason"])
 
 SAMPLE_TRANSACTIONS = """Rs 450.00 debited from A/c XX1234 on 12-Sep-25 at SWIGGY BANGALORE. Avl Bal Rs 12,340.50
 Rs 3,499.00 debited from A/c XX1234 at AMAZON on 12-Sep-25. Avl Bal Rs 11,200.
@@ -158,10 +167,15 @@ Rs 5,000.00 withdrawn from A/c XX1234 at SBI ATM MG ROAD on 12-Sep-25. Avl Bal R
 Rs 5,000.00 debited from A/c XX1234 towards SIP MUTUAL FUND ZERODHA on 05-Sep-25. Avl Bal Rs 22,300.
 Rs 1,240.00 debited from A/c XX1234 towards BESCOM ELECTRICITY BILL on 12-Sep-25. Avl Bal Rs 9,760."""
 
-st.set_page_config(page_title="NXTSight", layout="centered")
+st.set_page_config(page_title="NXTSight", page_icon="🛡️", layout="centered")
+inject_theme()
+sidebar_brand()
 
-st.title("NXTSight")
-st.caption("Your on-device shield against financial fraud — built for the Snapdragon AI Lab Build & Present Challenge")
+hero(
+    "NXTSight",
+    "Your on-device shield against financial fraud — built for the Snapdragon AI Lab Build &amp; Present Challenge",
+    icon="🛡️",
+)
 
 _, execution_description = select_execution_providers()
 is_on_npu = execution_description.startswith("Snapdragon NPU")
@@ -173,32 +187,25 @@ except Exception as exc:
     network_isolation_ok = False
     network_isolation_error = str(exc)
 
-status_col1, status_col2 = st.columns(2)
-with status_col1:
-    if is_on_npu:
-        st.success(f"**Execution path:** {execution_description}")
-    else:
-        st.info(f"**Execution path:** {execution_description}")
-with status_col2:
-    if network_isolation_ok:
-        st.success(
-            "**Network: blocked & verified** — a real outbound connection attempt was "
-            "just made and rejected by NXTSight's own code, proving inference needs no network."
-        )
-    else:
-        st.error(f"**NETWORK ISOLATION CHECK FAILED:** {network_isolation_error}")
-        st.stop()
+if not network_isolation_ok:
+    st.error(f"**NETWORK ISOLATION CHECK FAILED:** {network_isolation_error}")
+    st.stop()
+
+badge_row(
+    ("npu" if is_on_npu else "cpu", f"⚡ {execution_description}"),
+    ("safe", "🔒 Network blocked &amp; verified — inference needs no network"),
+)
 
 ocr_ai_hub_active, ocr_ai_hub_status = ocr_qai_hub.status()
 minilm_ai_hub_active, minilm_ai_hub_status = text_encoder.status()
 whisper_ai_hub_active, whisper_ai_hub_status = whisper_qai_hub.status()
-with st.expander("Which real AI Hub models are active right now?"):
+with st.expander("🔍 Which real AI Hub models are active right now?"):
     st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✅ AI Hub-compiled model active' if ocr_ai_hub_active else '⚠️ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
     st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✅ AI Hub-compiled model active' if minilm_ai_hub_active else '⚠️ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
     st.write(f"**Whisper encoder (Call Shield, decoder stays local):** {'✅ AI Hub-compiled model active' if whisper_ai_hub_active else '⚠️ fallback (local Whisper tiny.en)'} — {whisper_ai_hub_status}")
 
 st.warning(
-    "**This is a live working prototype, not the finished product.** You're pasting text or "
+    "**💡 This is a live working prototype, not the finished product.** You're pasting text or "
     "uploading a screenshot by hand so you can try it live. In the real product, NXTSight "
     "reads your phone's incoming SMS and notifications **automatically in the background** — "
     "the same way apps like Walnut or Money View already do in India — so you'd never open an "
@@ -220,16 +227,16 @@ if "payment_interrupt" not in st.session_state:
 
 scam_tab, spend_tab, receipt_tab, call_tab, payment_tab = st.tabs(
     [
-        "Scam Screenshot Scanner",
-        "Spend Insight",
-        "Receipt / Bill Scanner",
-        "Call Shield",
-        "Payment Pause",
+        "🛡️  Scam Shield",
+        "💰  Money Insight",
+        "🧾  Receipt Scanner",
+        "📞  Call Shield",
+        "⏸️  Payment Pause",
     ]
 )
 
 with scam_tab:
-    st.subheader("Scam Screenshot Scanner")
+    section("Scam Shield", "🛡️")
     st.write("Upload a screenshot of a message, or try one of the sample scam screenshots below.")
 
     sample_files = sorted(SAMPLES_DIR.glob("scam_*.png")) if SAMPLES_DIR.exists() else []
@@ -267,24 +274,21 @@ with scam_tab:
 
                 if result["reason"].startswith("Couldn't analyze this"):
                     st.warning(result["reason"])
-                elif result["is_scam"]:
-                    st.error(f"**Likely a scam** — {result['confidence'] * 100:.0f}% confidence")
-                    st.write(result["reason"])
-                    _flag_once(
-                        "_last_scam_flag", "Scam Screenshot Scanner", result["reason"], result["confidence"]
-                    )
-                    st.caption(
-                        "Logged to **Payment Pause** — open that tab and a simulated payment "
-                        "attempt will run on its own in a few seconds and get paused on this flag."
-                    )
                 else:
-                    st.success(f"**Looks legitimate** — {result['confidence'] * 100:.0f}% confidence")
-                    st.write(result["reason"])
+                    _verdict_card(result["is_scam"], result["confidence"], result["reason"], "Likely a scam", "Looks legitimate")
+                    if result["is_scam"]:
+                        _flag_once(
+                            "_last_scam_flag", "Scam Shield", result["reason"], result["confidence"]
+                        )
+                        st.caption(
+                            "Logged to **Payment Pause** — open that tab and a simulated payment "
+                            "attempt will run on its own in a few seconds and get paused on this flag."
+                        )
         except Exception as exc:
             st.error(f"Couldn't process this screenshot: {exc}")
 
 with spend_tab:
-    st.subheader("Spend Insight")
+    section("Money Insight", "💰")
     st.write("Paste bank/UPI transaction messages below, one per line, or load sample transactions.")
 
     if "transactions_text" not in st.session_state:
@@ -341,10 +345,10 @@ with spend_tab:
             st.error(f"Couldn't analyze these transactions: {exc}")
 
 with receipt_tab:
-    st.subheader("Receipt / Bill Scanner")
+    section("Receipt / Bill Scanner", "🧾")
     st.write(
         "Upload a screenshot of a payment confirmation, receipt, or bill — or try one of the "
-        "sample screenshots below — and add what it finds straight into Spend Insight."
+        "sample screenshots below — and add what it finds straight into Money Insight."
     )
 
     receipt_sample_files = sorted(SAMPLES_DIR.glob("receipt_*.png")) if SAMPLES_DIR.exists() else []
@@ -390,25 +394,25 @@ with receipt_tab:
                 with st.expander("Extracted text (for reference)"):
                     st.text(receipt_result["raw_text"])
 
-                if st.button("Add to Spend Insight", type="primary"):
+                if st.button("Add to Money Insight", type="primary"):
                     st.session_state.screenshot_transactions.append(
                         {"text": receipt_result["transaction_text"], "source": "screenshot"}
                     )
                     # Tabs' code all runs every rerun regardless of which tab
-                    # is visible, but in script order — the Spend Insight tab
+                    # is visible, but in script order — the Money Insight tab
                     # above already rendered by the time this button's click
                     # is handled, so without forcing a fresh rerun here it
                     # wouldn't show this addition until some *later*
                     # unrelated interaction. st.toast() (unlike st.success)
                     # survives the rerun that follows it, so the confirmation
                     # is still visible on the other side.
-                    st.toast("Added to Spend Insight — open that tab and click Analyze spending to see it.")
+                    st.toast("Added to Money Insight — open that tab and click Analyze spending to see it.")
                     st.rerun()
         except Exception as exc:
             st.error(f"Couldn't process this image: {exc}")
 
 with call_tab:
-    st.subheader("Call Shield")
+    section("Call Shield", "📞")
     st.write(
         "Looks for patterns specific to India's call-fraud landscape: impersonating a bank, police, or "
         "courier service; manufactured urgency; threats of arrest or legal action; requests for an OTP "
@@ -513,9 +517,9 @@ with call_tab:
                 st.error(f"Couldn't process this recording: {exc}")
 
 with payment_tab:
-    st.subheader("Payment Pause")
+    section("Payment Pause", "⏸️")
     st.write(
-        "Ties **Scam Screenshot Scanner** and **Call Shield** together: whenever either one "
+        "Ties **Scam Shield** and **Call Shield** together: whenever either one "
         f"flags something as a likely scam, it's logged here, and a simulated payment attempt "
         "runs **on its own a few seconds later, with no click needed** — the same way a "
         "scammer's manufactured urgency tries to rush someone straight from a scam message or "
@@ -568,25 +572,26 @@ with payment_tab:
 
     if st.session_state.payment_interrupt:
         matches = st.session_state.payment_interrupt
-        st.error(
-            f"**Payment paused.** {len(matches)} scam flag(s) in the last {WINDOW_MINUTES} minutes:"
-        )
-        for flag in matches:
-            st.write(
-                f"- **{flag.source}**, {format_age(flag.at)} "
-                f"({flag.confidence * 100:.0f}% confidence) — {flag.reason}"
+        with st.container(border=True):
+            st.error(
+                f"**⏸️ Payment paused.** {len(matches)} scam flag(s) in the last {WINDOW_MINUTES} minutes:"
             )
-        cancel_col, proceed_col = st.columns(2)
-        if cancel_col.button("Cancel payment", type="primary"):
-            st.session_state.payment_interrupt = None
-            st.toast("Payment cancelled.")
-            st.rerun()
-        if proceed_col.button("Proceed anyway"):
-            st.session_state.payment_interrupt = None
-            st.toast("Payment confirmed despite the warning (simulated).")
-            st.rerun()
+            for flag in matches:
+                st.write(
+                    f"- **{flag.source}**, {format_age(flag.at)} "
+                    f"({flag.confidence * 100:.0f}% confidence) — {flag.reason}"
+                )
+            cancel_col, proceed_col = st.columns(2)
+            if cancel_col.button("Cancel payment", type="primary"):
+                st.session_state.payment_interrupt = None
+                st.toast("Payment cancelled.")
+                st.rerun()
+            if proceed_col.button("Proceed anyway"):
+                st.session_state.payment_interrupt = None
+                st.toast("Payment confirmed despite the warning (simulated).")
+                st.rerun()
     else:
         st.success(
-            f"**Current status:** no scam flags in the last {WINDOW_MINUTES} minutes — a "
+            f"**✅ Current status:** no scam flags in the last {WINDOW_MINUTES} minutes — a "
             "confirmed payment would proceed normally."
         )

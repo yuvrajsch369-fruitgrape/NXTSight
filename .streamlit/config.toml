@@ -5,3 +5,14 @@
 # reporting on NXTSight's own inference code, not Streamlit's telemetry.
 [browser]
 gatherUsageStats = false
+
+# Dark mode only, everywhere — no light-mode flash on load, no toggle to
+# accidentally leave dark mode. assets/theme.css layers the rest of the
+# look (fonts, gradients, cards) on top of this base palette.
+[theme]
+base = "dark"
+primaryColor = "#7C5CFF"
+backgroundColor = "#0A0E17"
+secondaryBackgroundColor = "#131826"
+textColor = "#F1F3F9"
+font = "sans serif"

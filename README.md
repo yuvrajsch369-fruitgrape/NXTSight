@@ -117,7 +117,7 @@ How a request actually moves through the system, feature by feature:
 
 ## User flow
 
-Open the app in a browser (`streamlit run app.py`, usually `http://localhost:8501`) and there are five tabs, all pre-loaded with sample data:
+Open the app in a browser (`streamlit run app.py`, usually `http://localhost:8501`) and there are five tabs, all pre-loaded with sample data. The whole app — this page and Future Vision — is dark mode only, no toggle, no light-mode flash on load.
 
 1. **Scam Shield** — pick one of the sample screenshots or upload your own, and it flags the message as scam or not, with a reason.
 2. **Money Insight** — load the sample transactions (or paste your own) and hit analyze; get a categorized table and one summary sentence.
@@ -133,12 +133,15 @@ No login, no account, nothing to configure beyond installing dependencies. If yo
 NXTSight/
 ├── app.py                    # streamlit run app.py — the demo UI, five tabs
 ├── pages/
-│   └── Future_Vision.py      # a separate page: where this could go beyond the hackathon build
+│   └── 🔭_Future_Vision.py   # a separate page: where this could go beyond the hackathon build
 ├── FUTURE_VISION.md           # source text for the Future Vision page
+├── assets/theme.css           # the shared dark theme — fonts, gradients, cards, animations
 ├── backend/                   # FastAPI service exposing all five features over HTTP
 │   ├── main.py                     # uvicorn backend.main:app
 │   └── README.md                   # endpoint docs + curl examples
 ├── src/
+│   ├── ui/
+│   │   └── theme.py                # injects assets/theme.css + small markup helpers (hero, section, badges)
 │   ├── pipeline/
 │   │   ├── engine.py               # NXTSightEngine — the one shared object every task calls through
 │   │   ├── runtime.py              # picks QNN (NPU) vs CPU, auto-detected
