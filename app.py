@@ -179,7 +179,7 @@ hero(
 )
 
 vision_cta(
-    "pages/🔭_Future_Vision.py",
+    "pages/✦_Future_Vision.py",
     "Future Vision",
     "where NXTSight goes from here — not just the hackathon build.",
 )
