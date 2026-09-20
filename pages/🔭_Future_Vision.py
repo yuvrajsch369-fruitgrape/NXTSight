@@ -5,23 +5,28 @@ A separate page (Streamlit's native pages/ multi-page mechanism), not a
 interact with like Scam Shield or Call Shield. Renders FUTURE_VISION.md
 verbatim: the source of truth is that file, not this script, so the page
 can never drift from it. Only the surrounding chrome (theme, hero
-banner, typography) is this file's own.
+banner, typography, the link back) is this file's own.
+
+Reached from a highlighted card on the main page (src.ui.theme.vision_cta
+in app.py) rather than the sidebar — the sidebar nav still works as a
+fallback, but starts collapsed.
 """
 
 from pathlib import Path
 
 import streamlit as st
 
-from src.ui.theme import hero, inject_theme, sidebar_brand
+from src.ui.theme import hero, inject_theme
 
-st.set_page_config(page_title="NXTSight — Future Vision", page_icon="🔭", layout="centered")
+st.set_page_config(page_title="NXTSight — Future Vision", page_icon="✦", layout="centered", initial_sidebar_state="collapsed")
 inject_theme()
-sidebar_brand()
+
+st.page_link("app.py", label="←  Back to NXTSight")
 
 hero(
     "Future Vision",
     "Where NXTSight goes from here — written to be held to, not just read.",
-    icon="🔭",
+    icon="✦",
     compact=True,
 )
 

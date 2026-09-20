@@ -83,7 +83,7 @@ from src.pipeline.runtime import select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
 from src.spend_categorizer.receipt_parser import process_receipt_screenshot
-from src.ui.theme import badge_row, hero, inject_theme, section, sidebar_brand
+from src.ui.theme import badge_row, hero, inject_theme, meter, section, status_dots, vision_cta
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "data" / "samples"
 
@@ -137,12 +137,14 @@ def _flag_once(session_key, source, reason, confidence):
 
 def _verdict_card(is_scam: bool, confidence: float, reason: str, scam_label: str, legit_label: str) -> None:
     """A styled result card shared by Scam Shield and Call Shield — same
-    st.error/st.success/st.write calls as before, just grouped visually."""
+    st.error/st.success/st.write calls as before, just grouped visually,
+    plus a small confidence gauge (purely decorative)."""
     with st.container(border=True):
         if is_scam:
-            st.error(f"**{scam_label}** — {confidence * 100:.0f}% confidence")
+            st.error(f"**{scam_label}**")
         else:
-            st.success(f"**{legit_label}** — {confidence * 100:.0f}% confidence")
+            st.success(f"**{legit_label}**")
+        meter(confidence, danger=is_scam)
         st.write(reason)
 
 
@@ -167,14 +169,19 @@ Rs 5,000.00 withdrawn from A/c XX1234 at SBI ATM MG ROAD on 12-Sep-25. Avl Bal R
 Rs 5,000.00 debited from A/c XX1234 towards SIP MUTUAL FUND ZERODHA on 05-Sep-25. Avl Bal Rs 22,300.
 Rs 1,240.00 debited from A/c XX1234 towards BESCOM ELECTRICITY BILL on 12-Sep-25. Avl Bal Rs 9,760."""
 
-st.set_page_config(page_title="NXTSight", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="NXTSight", page_icon="◆", layout="centered", initial_sidebar_state="collapsed")
 inject_theme()
-sidebar_brand()
 
 hero(
     "NXTSight",
     "Your on-device shield against financial fraud — built for the Snapdragon AI Lab Build &amp; Present Challenge",
-    icon="🛡️",
+    icon="⟡",
+)
+
+vision_cta(
+    "pages/🔭_Future_Vision.py",
+    "Future Vision",
+    "where NXTSight goes from here — not just the hackathon build.",
 )
 
 _, execution_description = select_execution_providers()
@@ -192,20 +199,25 @@ if not network_isolation_ok:
     st.stop()
 
 badge_row(
-    ("npu" if is_on_npu else "cpu", f"⚡ {execution_description}"),
-    ("safe", "🔒 Network blocked &amp; verified — inference needs no network"),
+    ("npu" if is_on_npu else "cpu", f"» {execution_description}"),
+    ("safe", "✓ Network blocked &amp; verified — inference needs no network"),
 )
 
 ocr_ai_hub_active, ocr_ai_hub_status = ocr_qai_hub.status()
 minilm_ai_hub_active, minilm_ai_hub_status = text_encoder.status()
 whisper_ai_hub_active, whisper_ai_hub_status = whisper_qai_hub.status()
-with st.expander("🔍 Which real AI Hub models are active right now?"):
-    st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✅ AI Hub-compiled model active' if ocr_ai_hub_active else '⚠️ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
-    st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✅ AI Hub-compiled model active' if minilm_ai_hub_active else '⚠️ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
-    st.write(f"**Whisper encoder (Call Shield, decoder stays local):** {'✅ AI Hub-compiled model active' if whisper_ai_hub_active else '⚠️ fallback (local Whisper tiny.en)'} — {whisper_ai_hub_status}")
+with st.expander("Which real AI Hub models are active right now?"):
+    status_dots(
+        ("OCR", ocr_ai_hub_active),
+        ("MiniLM-v2", minilm_ai_hub_active),
+        ("Whisper encoder", whisper_ai_hub_active),
+    )
+    st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✓ AI Hub-compiled model active' if ocr_ai_hub_active else '○ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
+    st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✓ AI Hub-compiled model active' if minilm_ai_hub_active else '○ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
+    st.write(f"**Whisper encoder (Call Shield, decoder stays local):** {'✓ AI Hub-compiled model active' if whisper_ai_hub_active else '○ fallback (local Whisper tiny.en)'} — {whisper_ai_hub_status}")
 
 st.warning(
-    "**💡 This is a live working prototype, not the finished product.** You're pasting text or "
+    "**◐ This is a live working prototype, not the finished product.** You're pasting text or "
     "uploading a screenshot by hand so you can try it live. In the real product, NXTSight "
     "reads your phone's incoming SMS and notifications **automatically in the background** — "
     "the same way apps like Walnut or Money View already do in India — so you'd never open an "
@@ -227,16 +239,16 @@ if "payment_interrupt" not in st.session_state:
 
 scam_tab, spend_tab, receipt_tab, call_tab, payment_tab = st.tabs(
     [
-        "🛡️  Scam Shield",
-        "💰  Money Insight",
-        "🧾  Receipt Scanner",
-        "📞  Call Shield",
-        "⏸️  Payment Pause",
+        "◈  Scam Shield",
+        "¤  Money Insight",
+        "▤  Receipt Scanner",
+        "☎  Call Shield",
+        "⏸  Payment Pause",
     ]
 )
 
 with scam_tab:
-    section("Scam Shield", "🛡️")
+    section("Scam Shield", "◈")
     st.write("Upload a screenshot of a message, or try one of the sample scam screenshots below.")
 
     sample_files = sorted(SAMPLES_DIR.glob("scam_*.png")) if SAMPLES_DIR.exists() else []
@@ -288,7 +300,7 @@ with scam_tab:
             st.error(f"Couldn't process this screenshot: {exc}")
 
 with spend_tab:
-    section("Money Insight", "💰")
+    section("Money Insight", "¤")
     st.write("Paste bank/UPI transaction messages below, one per line, or load sample transactions.")
 
     if "transactions_text" not in st.session_state:
@@ -345,7 +357,7 @@ with spend_tab:
             st.error(f"Couldn't analyze these transactions: {exc}")
 
 with receipt_tab:
-    section("Receipt / Bill Scanner", "🧾")
+    section("Receipt / Bill Scanner", "▤")
     st.write(
         "Upload a screenshot of a payment confirmation, receipt, or bill — or try one of the "
         "sample screenshots below — and add what it finds straight into Money Insight."
@@ -412,7 +424,7 @@ with receipt_tab:
             st.error(f"Couldn't process this image: {exc}")
 
 with call_tab:
-    section("Call Shield", "📞")
+    section("Call Shield", "☎")
     st.write(
         "Looks for patterns specific to India's call-fraud landscape: impersonating a bank, police, or "
         "courier service; manufactured urgency; threats of arrest or legal action; requests for an OTP "
@@ -517,7 +529,7 @@ with call_tab:
                 st.error(f"Couldn't process this recording: {exc}")
 
 with payment_tab:
-    section("Payment Pause", "⏸️")
+    section("Payment Pause", "⏸")
     st.write(
         "Ties **Scam Shield** and **Call Shield** together: whenever either one "
         f"flags something as a likely scam, it's logged here, and a simulated payment attempt "
@@ -574,7 +586,7 @@ with payment_tab:
         matches = st.session_state.payment_interrupt
         with st.container(border=True):
             st.error(
-                f"**⏸️ Payment paused.** {len(matches)} scam flag(s) in the last {WINDOW_MINUTES} minutes:"
+                f"**⏸ Payment paused.** {len(matches)} scam flag(s) in the last {WINDOW_MINUTES} minutes:"
             )
             for flag in matches:
                 st.write(
@@ -592,6 +604,6 @@ with payment_tab:
                 st.rerun()
     else:
         st.success(
-            f"**✅ Current status:** no scam flags in the last {WINDOW_MINUTES} minutes — a "
+            f"**✓ Current status:** no scam flags in the last {WINDOW_MINUTES} minutes — a "
             "confirmed payment would proceed normally."
         )

@@ -26,7 +26,7 @@ def inject_theme() -> None:
     st.markdown(f"<style>{_CSS_CACHE}</style>", unsafe_allow_html=True)
 
 
-def hero(title: str, subtitle: str, icon: str = "\U0001F6E1️", compact: bool = False) -> None:
+def hero(title: str, subtitle: str, icon: str = "⟡", compact: bool = False) -> None:
     """The gradient banner at the top of every page."""
     compact_class = " nxt-hero-compact" if compact else ""
     st.markdown(
@@ -56,20 +56,44 @@ def section(title: str, icon: str) -> None:
     )
 
 
-def sidebar_brand() -> None:
-    """A small branded header pinned above the auto-generated page nav."""
-    st.sidebar.markdown(
-        """
-        <div class="nxt-sidebar-brand">
-          <span class="nxt-dot"></span> NXTSight
+def badge_row(*badges: tuple[str, str]) -> None:
+    """Render a row of pill badges. Each badge is (variant, label) where
+    variant is one of "npu", "cpu", "safe" — matching the CSS classes."""
+    spans = "".join(f'<span class="nxt-badge nxt-badge-{variant}">{label}</span>' for variant, label in badges)
+    st.markdown(f'<div class="nxt-badge-row">{spans}</div>', unsafe_allow_html=True)
+
+
+def meter(confidence: float, danger: bool) -> None:
+    """A small animated gauge bar under a verdict — confidence is 0..1.
+    danger=True colors it red (scam), False colors it green (legit)."""
+    variant = "danger" if danger else "safe"
+    pct = max(0.0, min(1.0, confidence)) * 100
+    st.markdown(
+        f"""
+        <div class="nxt-meter-label"><span>Confidence</span><span>{pct:.0f}%</span></div>
+        <div class="nxt-meter-track">
+          <div class="nxt-meter-fill nxt-meter-{variant}" style="width:{pct:.0f}%"></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def badge_row(*badges: tuple[str, str]) -> None:
-    """Render a row of pill badges. Each badge is (variant, label) where
-    variant is one of "npu", "cpu", "safe" — matching the CSS classes."""
-    spans = "".join(f'<span class="nxt-badge nxt-badge-{variant}">{label}</span>' for variant, label in badges)
-    st.markdown(f'<div class="nxt-badge-row">{spans}</div>', unsafe_allow_html=True)
+def status_dots(*items: tuple[str, bool]) -> None:
+    """A row of small on/off dots — a "systems online" tracker. Each
+    item is (label, is_on)."""
+    dots = "".join(
+        f'<span class="nxt-dot-item"><span class="nxt-dot {"nxt-dot-on" if on else ""}"></span>{label}</span>'
+        for label, on in items
+    )
+    st.markdown(f'<div class="nxt-dots-row">{dots}</div>', unsafe_allow_html=True)
+
+
+def vision_cta(target_page: str, label: str, subtitle: str, tag: str = "BEYOND THE DEMO") -> None:
+    """The highlighted, in-page link to Future Vision — st.page_link()
+    inside a real st.container(key=...) so it's genuinely nested (see
+    the .st-key-nxt_cta rule in theme.css), not a hand-wrapped <div>
+    spanning across sibling widgets."""
+    with st.container(key="nxt_cta"):
+        st.page_link(target_page, label=f"{label}  →")
+        st.caption(f'<span class="nxt-cta-tag">{tag}</span> {subtitle}', unsafe_allow_html=True)
