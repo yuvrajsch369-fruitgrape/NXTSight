@@ -84,7 +84,7 @@ except Exception as exc:
     raise SystemExit(1)
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
-from src.pipeline import ocr_qai_hub, text_encoder, whisper_qai_hub
+from src.pipeline import ocr_qai_hub, text_encoder, whisper_cpp, whisper_qai_hub
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
 from src.pipeline.runtime import select_execution_providers
@@ -105,9 +105,11 @@ _, EXECUTION_DESCRIPTION = select_execution_providers()
 OCR_AI_HUB_ACTIVE, OCR_AI_HUB_STATUS = ocr_qai_hub.status()
 MINILM_AI_HUB_ACTIVE, MINILM_AI_HUB_STATUS = text_encoder.status()
 WHISPER_AI_HUB_ACTIVE, WHISPER_AI_HUB_STATUS = whisper_qai_hub.status()
+WHISPER_CPP_ACTIVE, WHISPER_CPP_STATUS = whisper_cpp.status()
 print(f"[NXTSight] AI Hub OCR: {'ACTIVE' if OCR_AI_HUB_ACTIVE else 'FALLBACK'} — {OCR_AI_HUB_STATUS}")
 print(f"[NXTSight] AI Hub MiniLM-v2 text encoder: {'ACTIVE' if MINILM_AI_HUB_ACTIVE else 'FALLBACK'} — {MINILM_AI_HUB_STATUS}")
-print(f"[NXTSight] AI Hub Whisper encoder (decoder stays local): {'ACTIVE' if WHISPER_AI_HUB_ACTIVE else 'FALLBACK'} — {WHISPER_AI_HUB_STATUS}")
+print(f"[NXTSight] Call Shield speech-to-text tier 1 (Snapdragon/AI Hub): {'ACTIVE' if WHISPER_AI_HUB_ACTIVE else 'FALLBACK'} — {WHISPER_AI_HUB_STATUS}")
+print(f"[NXTSight] Call Shield speech-to-text tier 2 (whisper.cpp/GGUF): {'ACTIVE' if WHISPER_CPP_ACTIVE else 'FALLBACK'} — {WHISPER_CPP_STATUS}")
 
 app = FastAPI(
     title="NXTSight Backend",
@@ -161,6 +163,10 @@ def get_status():
             "ocr": {"active": OCR_AI_HUB_ACTIVE, "status": OCR_AI_HUB_STATUS},
             "minilm_v2_text_encoder": {"active": MINILM_AI_HUB_ACTIVE, "status": MINILM_AI_HUB_STATUS},
             "whisper_encoder": {"active": WHISPER_AI_HUB_ACTIVE, "status": WHISPER_AI_HUB_STATUS},
+        },
+        "call_shield_speech_to_text": {
+            "tier_1_snapdragon_ai_hub": {"active": WHISPER_AI_HUB_ACTIVE, "status": WHISPER_AI_HUB_STATUS},
+            "tier_2_whisper_cpp": {"active": WHISPER_CPP_ACTIVE, "status": WHISPER_CPP_STATUS},
         },
     }
 

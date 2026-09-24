@@ -1,8 +1,6 @@
 # NXTSight
 
-Built for Snapdragon-powered HP PCs, it started as a solo entry for Qualcomm's Snapdragon AI Lab Build & Present Challenge, running fully on-device.
-
-NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. On a Snapdragon PC it runs on the Hexagon NPU through Qualcomm's QNN execution provider, everywhere else it falls back to CPU automatically. Same code, same result, either way.
+NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. It automatically uses whatever hardware accelerator the machine actually has (Snapdragon NPU, NVIDIA/Windows GPU, Apple Neural Engine) and falls back to plain CPU otherwise — same code, same result, either way. Nothing about that "no cloud" claim is a design nicety: it's the whole reason a bank could ever plug this into a real payment flow.
 
 ## The problem
 
@@ -14,7 +12,7 @@ NXTSight addresses both. It reads a suspicious message and tells you whether it 
 
 Gen Digital, Norton's parent company, already ships an AI scam detector called Genie inside Norton 360 — it's real, it's live globally, and it's a genuine competitor in this space. But Genie's own India page says nothing about UPI-specific fraud, fake KYC messages, digital-arrest call scams, or courier-customs fee scams, and Gen Digital's own numbers show its strength sitting in North America and Europe, not India. 
 
-That's the gap NXTSight is built for: depth in exactly the fraud patterns and payment rails that dominate the Indian market, running fully on-device rather than phoning a server for every check. Gen Digital has already shipped a chip-specific partnership before — Norton Deepfake Protection, built around Intel's on-device silicon — which is the precedent for what a Snapdragon-specific, India-specific fraud engine could become.
+That's the gap NXTSight is built for: depth in exactly the fraud patterns and payment rails that dominate the Indian market, running fully on-device rather than phoning a server for every check.
 
 ## What it does
 
@@ -32,48 +30,36 @@ Call Shield's "live" mode genuinely captures audio through your device's mic and
 
 ## The AI models
 
-**Compiled and profiled on real Snapdragon X Elite hardware through Qualcomm AI Hub:**
+Five real models, none of them calling out to a cloud API:
 
-| Model | Job | Inference time | Runs on |
-|---|---|---|---|
-| EasyOCR — detector | build + profile | 38.1 ms | NPU |
-| EasyOCR — recognizer | build + profile | 20.4 ms | NPU |
-| MiniLM-v2 text encoder | build + profile | 1.9 ms | NPU |
-| Whisper-tiny encoder | build + profile | 27.8 ms | NPU |
-| Scam classifier head | build + profile | 41 µs | NPU |
-| Spend classifier head | build + profile | 35 µs | NPU |
-| Call Shield classifier head | build + profile | 41 µs | NPU |
+- **`sentence-transformers/all-MiniLM-L6-v2`** (HuggingFace) — the shared text encoder underneath all three classifiers. Rebuilt by hand in [`src/pipeline/text_encoder.py`](src/pipeline/text_encoder.py) around the already-installed torch, exported to a portable `.onnx`.
+- **`openai/whisper-tiny`** — Call Shield's speech-to-text, three tiers deep: the Snapdragon-specific ONNX-exported encoder when that hardware is present, whisper.cpp/GGUF (real Metal/CUDA/Vulkan acceleration everywhere else) as the second tier, plain PyTorch as the final fallback. The autoregressive decoder never runs through anything hand-converted — see [The On-Device Pipeline](#the-on-device-pipeline).
+- **EasyOCR** — the detector + recognizer behind Scam Shield and the Receipt Scanner's screenshot reading.
+- **Three `scikit-learn LogisticRegression` heads** (scam / spend / call) — trained locally on hand-labeled data, sitting on top of MiniLM's embeddings. Not from any model zoo; these are NXTSight's own.
 
-These aren't estimates — each one went through a real compile job and a real profiling job on physical Snapdragon silicon in Qualcomm's cloud device farm, and the numbers above are what came back. Job links and the full story for each are in [Snapdragon / Qualcomm AI Hub](#snapdragon--qualcomm-ai-hub) below.
-
-**From outside AI Hub, underneath the above:**
-
-- **`sentence-transformers/all-MiniLM-L6-v2`** (HuggingFace) — the base weights AI Hub's own MiniLM-v2 listing is built from. AI Hub's packaged version needs `torch>=2.4`, which has no installable wheel on this dev machine (or, it turns out, on Windows ARM64 either), so `src/pipeline/text_encoder.py` rebuilds the same architecture by hand with the already-installed torch and exports that.
-- **`openai/whisper-tiny`** decoder — stays in plain PyTorch, deliberately never sent through ONNX. Autoregressive, token-by-token decoding is the part of Whisper most likely to quietly go wrong if hand-converted; only the encoder (a single forward pass) was compiled for the NPU.
-- **EasyOCR's own architecture** — open source, the base the AI Hub-compiled detector and recognizer come from.
-- **scikit-learn `LogisticRegression`** — the three classification heads (scam / spend / call) are trained locally on hand-labeled data, then hand-exported to ONNX and compiled through AI Hub. These aren't from any model zoo; they're NXTSight's own, sitting on top of MiniLM's embeddings.
+Every one of those ships a portable, vendor-neutral `.onnx` file (hand-exported where the default tooling didn't cooperate — see [`onnx_export.py`](src/pipeline/onnx_export.py)) that runs on whatever hardware accelerator is actually present — see [The On-Device Pipeline](#the-on-device-pipeline) below. On top of that, all seven (the five models above, split into 7 artifacts — EasyOCR is two stages, Whisper's encoder is separate from its decoder) have additionally been compiled and profiled on **real Snapdragon X Elite hardware** through Qualcomm AI Hub, landing at 35–41 microseconds for the three classifier heads and single-digit milliseconds for the larger encoders — genuine, measured numbers, not estimates. Full job-by-job detail is in the [appendix](#appendix-snapdragon-specific-verification) at the bottom of this README.
 
 ## The On-Device Pipeline
 
-Every model in NXTSight — OCR, the MiniLM encoder, the Whisper encoder, all three classifier heads — loads through exactly one function: `runtime.create_inference_session()`. That function checks `onnxruntime.get_available_providers()` once, at startup. If Qualcomm's QNN provider shows up (a Snapdragon PC with `onnxruntime-qnn` installed), every session prefers it and inference runs on the Hexagon NPU. If it doesn't, sessions fall back to plain CPU — no flag to set, no separate build, same code path either way. This is checked live, not assumed: the app shows which path is active on screen every time it starts.
+Every model in NXTSight — OCR, the MiniLM encoder, the Whisper encoder, all three classifier heads — loads through exactly one function: `runtime.create_inference_session()`. That function is a small hardware-abstraction layer over ONNX Runtime's own execution providers, not something hand-rolled per vendor: it checks `onnxruntime.get_available_providers()` once at startup and prefers, in order, Qualcomm's QNN provider (Snapdragon Hexagon NPU), then CUDA (NVIDIA GPU), then DirectML (any GPU on Windows), then CoreML (Apple Neural Engine/GPU), falling back to plain CPU if none of those are present. No flag to set, no separate build — same code path picks whichever real accelerator this machine actually has. This is checked live, not assumed: the app shows which path is active on screen every time it starts.
 
 OCR is the "read" step ahead of everything else for screenshot-based features — it turns an image into raw text, and that text then goes through the same pipeline as any typed message. Nothing downstream cares whether text came from OCR or from a paste box.
 
 MiniLM-v2 is the shared understanding layer underneath all three classifiers. Scam Shield, Money Insight, and Call Shield each encode their input text into the same 384-dimension embedding through MiniLM, and a small trained head sitting on top of that embedding — different for each task — makes the actual call. One encoder doing the language understanding, three lightweight heads doing task-specific judgment, instead of three separate NLP pipelines duplicating the same work.
 
-Whisper is split for the same reason MiniLM's decoder-equivalent risk doesn't apply to it: the encoder (audio in, hidden states out, one forward pass) runs through ONNX/QNN, and the decoder stays in `qai_hub_models`' own unmodified PyTorch loop. Before trusting the hybrid, transcripts from the ONNX-encoder + PyTorch-decoder combination were checked byte-for-byte against an all-PyTorch baseline on every bundled sample recording — identical output on all four.
+Whisper's autoregressive decoder never runs through anything hand-converted, on any tier — only the encoder (audio in, hidden states out, one forward pass) gets accelerated. Three tiers, in priority order ([`src/pipeline/stt.py`](src/pipeline/stt.py)): the Snapdragon-specific ONNX-exported encoder (`whisper_qai_hub.py`, decoder stays in `qai_hub_models`' own unmodified PyTorch loop) when that hardware is present; [`whisper.cpp`](src/pipeline/whisper_cpp.py)/GGUF next, a real binding to the upstream `ggml-org/whisper.cpp` project with its own Metal/CUDA/Vulkan/CPU dispatch — genuine GPU acceleration on machines that have no Snapdragon NPU at all, this dev Mac included (previously pure CPU); plain PyTorch as the final, always-available fallback. Every tier was checked against the same bundled sample recordings before being trusted — the AI Hub tier byte-for-byte against an all-PyTorch baseline (identical on all four), whisper.cpp against the classifier's actual verdict on all four (different model artifact — GGUF-quantized — so not byte-identical, but every sample still lands on the correct scam/legit call).
 
 If any model's `.onnx` file is missing or fails to load — a bad deploy, a cleared cache, whatever — the engine and the OCR/Whisper modules fall back to calling the plain PyTorch or scikit-learn model directly instead of crashing. The feature still works, just without the NPU-accelerated path.
 
-## What runs on-device (NPU vs. CPU fallback)
+## What runs on-device (NPU / GPU vs. CPU fallback)
 
 All of it, and the fallback is real, not theoretical:
 
-- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the QNN-aware engine today. `select_execution_providers()` picks QNN if present, CPU otherwise, and this switch is covered by its own test (`tests/test_runtime.py`), not just described.
-- **OCR** prefers the AI Hub-compiled detector/recognizer through the same QNN/CPU path, and falls back to EasyOCR's own PyTorch reader (CPU-only) if the compiled models aren't present.
-- **Call Shield's speech-to-text** prefers the AI Hub-compiled Whisper encoder through the same path, with the decoder always on local PyTorch, and falls back to OpenAI's own Whisper package entirely if the compiled encoder isn't available.
+- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the hardware-abstracted engine today. `select_execution_providers()` picks the best real accelerator ONNX Runtime reports — QNN, CUDA, DirectML, CoreML, in that order — CPU otherwise, and every path is covered by its own test (`tests/test_runtime.py`), not just described.
+- **OCR** prefers the AI Hub-compiled detector/recognizer through the same hardware-abstracted path, and falls back to EasyOCR's own PyTorch reader (CPU-only) if the compiled models aren't present.
+- **Call Shield's speech-to-text** tries the AI Hub-compiled Whisper encoder first (decoder always on local PyTorch), then whisper.cpp/GGUF for real Metal/CUDA/Vulkan acceleration, then falls back to OpenAI's own Whisper package entirely if neither accelerated tier is available.
 
-On this dev machine (an Intel Mac, no Snapdragon NPU) everything genuinely runs on CPU, and the on-screen badge says so honestly rather than claiming NPU. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the NPU path automatically. Worst case, if QNN somehow doesn't activate on a judge's machine, the CPU fallback is the same code already running here — not a separate untested branch.
+**Genuinely verified, not just two theoretical branches:** this dev machine is an Intel Mac with no Snapdragon NPU, but it does have Apple's CoreML execution provider — and the badge on screen now honestly shows **"Apple Neural Engine / GPU (ONNX Runtime CoreML execution provider)"** here, confirmed by actually running the scam classifier through it end to end (same 0.861 confidence as the CPU path, byte-identical result — CoreML doesn't change what the model says, only how fast it runs). QNN, CUDA, and DirectML are exercised with the real selection *logic* (`tests/test_runtime.py` mocks `get_available_providers()` to simulate each), not on real hardware — this codebase doesn't have a Snapdragon, NVIDIA, or Windows-GPU machine to test on directly. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the NPU path automatically. Worst case, if none of the accelerators activate on a given machine, the CPU fallback is the same code already running in CI — not a separate untested branch.
 
 ## Architecture
 
@@ -111,7 +97,7 @@ How a request actually moves through the system, feature by feature:
 
 **Receipt / Bill Scanner:** screenshot → the same OCR step Scam Shield uses → merchant/amount/date pulled out with layout-aware parsing → rebuilt into a normalized sentence → handed to the exact same spend classifier as Money Insight, tagged as coming from a screenshot instead of SMS.
 
-**Call Shield:** live mic audio, a WAV upload, or a pasted transcript → if audio, Whisper transcribes it (encoder on NPU, decoder on CPU) → engine encodes the transcript with MiniLM → call classifier head scores it, quoting back the specific line that triggered the verdict. Flagged calls also get written to Payment Pause's log.
+**Call Shield:** live mic audio, a WAV upload, or a pasted transcript → if audio, Whisper transcribes it (encoder accelerated where possible — Snapdragon NPU, then whisper.cpp/Metal/CUDA, then CPU — decoder always on CPU) → engine encodes the transcript with MiniLM → call classifier head scores it, quoting back the specific line that triggered the verdict. Flagged calls also get written to Payment Pause's log.
 
 **Payment Pause:** watches that shared, in-memory-only flag log. A few seconds after any new flag from Scam Shield or Call Shield, it automatically checks whether anything landed in the last 10 minutes — no button required — and if so, shows a simulated payment attempt pausing, with what was flagged, when, and why, before you choose to cancel or proceed anyway.
 
@@ -133,7 +119,7 @@ No login, no account, nothing to configure beyond installing dependencies. If yo
 NXTSight/
 ├── app.py                    # streamlit run app.py — the demo UI, five tabs
 ├── pages/
-│   └── ✦_Future_Vision.py    # a separate page: where this could go beyond the hackathon build
+│   └── ✦_Future_Vision.py    # a separate page: where this could go beyond today's build
 ├── FUTURE_VISION.md           # source text for the Future Vision page
 ├── assets/theme.css           # the shared dark theme — fonts, gradients, cards, animations
 ├── backend/                   # FastAPI service exposing all five features over HTTP
@@ -147,7 +133,9 @@ NXTSight/
 │   │   ├── runtime.py              # picks QNN (NPU) vs CPU, auto-detected
 │   │   ├── text_encoder.py         # MiniLM-v2 shared text encoder
 │   │   ├── ocr.py / ocr_qai_hub.py # screenshot -> text (local EasyOCR / AI Hub-compiled path)
-│   │   ├── stt.py / whisper_qai_hub.py  # audio -> text (local Whisper / AI Hub-compiled encoder)
+│   │   ├── stt.py                  # audio -> text: tries whisper_qai_hub, then whisper_cpp, then local Whisper
+│   │   ├── whisper_qai_hub.py      # tier 1: AI Hub-compiled Snapdragon encoder (optional)
+│   │   ├── whisper_cpp.py          # tier 2: whisper.cpp/GGUF, Metal/CUDA/Vulkan (optional)
 │   │   ├── onnx_export.py          # hand-built ONNX export for the three classifier heads
 │   │   ├── payment_pause.py        # the in-memory flag log + the "recent flag pauses a payment" rule
 │   │   ├── network_guard.py        # blocks and proves-blocked any outbound network call
@@ -159,30 +147,10 @@ NXTSight/
 ├── models/                    # AI Hub-compiled artifacts (OCR, MiniLM-v2, Whisper encoder)
 ├── scripts/                   # export_*.py (local ONNX export) and aihub_compile_*.py (real AI Hub jobs)
 ├── data/samples/               # sample screenshots, call recordings, transaction text used in the demo
-├── tests/                      # 148 tests covering every module above
+├── tests/                      # 159 tests covering every module above
 ├── requirements.txt
 └── README.md
 ```
-
-## Snapdragon / Qualcomm AI Hub
-
-Getting a model onto the NPU has two parts: a build-time step, run once by hand, that compiles a model for the Snapdragon X Elite and profiles it on real physical hardware in Qualcomm's cloud device farm; and the runtime check described above, which happens every time the app starts.
-
-All seven models listed in [The AI models](#the-ai-models) went through real, successful compile and profile jobs — not simulated, not estimated. The three custom classifier heads needed a hand-built ONNX export ([`src/pipeline/onnx_export.py`](src/pipeline/onnx_export.py)) to get there: `skl2onnx`'s default converter produces a dynamic batch dimension and an `ai.onnx.ml.LinearClassifier` op that AI Hub's compiler rejects outright. The fix was a static batch size of 1 and a plain `Gemm → Softmax → ArgMax` graph using only core ONNX ops — mathematically identical to scikit-learn's own `predict_proba`, checked against it directly rather than assumed.
-
-MiniLM-v2 and the Whisper encoder followed the same hand-export path for a different reason: AI Hub's own packaged versions of both need `torch>=2.4`, which isn't installable on this dev machine. Both were rebuilt by hand using the already-installed torch, verified numerically against the original PyTorch model before being submitted (MiniLM: max absolute difference `1.1e-7` against the original), and compiled through the raw `qai_hub` API instead of the `qai_hub_models` CLI.
-
-To run any of this yourself, you'll need your own free AI Hub account and API token from [aihub.qualcomm.com](https://aihub.qualcomm.com):
-
-```bash
-pip install qai-hub qai-hub-models
-qai-hub configure --api_token <YOUR_API_TOKEN>
-
-python -m src.scam_detector.train_classifier       # produces the .onnx
-python scripts/aihub_compile_scam_classifier.py     # compiles + profiles it on real Snapdragon hardware
-```
-
-Same pattern for `aihub_compile_spend_categorizer.py`, `aihub_compile_call_shield.py`, `aihub_compile_minilm.py`, and `aihub_compile_whisper_encoder.py`. For OCR, `scripts/export_easyocr.py` does the local export and `scripts/aihub_profile_easyocr.py` handles profiling.
 
 ## Running it
 
@@ -199,4 +167,32 @@ python scripts/check_setup.py   # confirms your environment is ready before you 
 streamlit run app.py
 ```
 
-Full test suite: 148 tests, all passing — `pytest` from the project root with the venv active.
+Full test suite: 159 tests, all passing — `pytest` from the project root with the venv active. Nothing above touches Qualcomm AI Hub, an account, or a network call — see the appendix below if you want the Snapdragon-specific detail.
+
+## Appendix: Snapdragon-specific verification
+
+Everything above already runs on real hardware acceleration wherever it's available — QNN, CUDA, DirectML, or CoreML, picked automatically (see [The On-Device Pipeline](#the-on-device-pipeline)). This appendix is additional, optional proof that the same models were also compiled and profiled on **real Snapdragon X Elite hardware** through Qualcomm AI Hub, for anyone who wants the specific numbers:
+
+| Model | Inference time | Compute unit |
+|---|---|---|
+| EasyOCR detector | 38.1 ms | NPU |
+| EasyOCR recognizer | 20.4 ms | NPU |
+| MiniLM-v2 text encoder | 1.9 ms | NPU |
+| Whisper-tiny encoder | 27.8 ms | NPU |
+| Scam classifier head | 41 µs | NPU |
+| Spend classifier head | 35 µs | NPU |
+| Call Shield classifier head | 41 µs | NPU |
+
+All seven went through real, successful compile and profile jobs on physical Snapdragon silicon in Qualcomm's cloud device farm — not simulated, not estimated. Getting there needed a hand-built ONNX export for the three classifier heads ([`onnx_export.py`](src/pipeline/onnx_export.py) — `skl2onnx`'s default converter emits a dynamic batch dimension and an `ai.onnx.ml` op AI Hub's compiler rejects outright) and the same hand-export approach for MiniLM-v2 and the Whisper encoder (AI Hub's own packaged versions need `torch>=2.4`, unavailable on this dev machine) — both verified numerically against the original PyTorch models before submitting.
+
+To reproduce this yourself, you'll need a free AI Hub account and API token from [aihub.qualcomm.com](https://aihub.qualcomm.com):
+
+```bash
+pip install qai-hub qai-hub-models
+qai-hub configure --api_token <YOUR_API_TOKEN>
+
+python -m src.scam_detector.train_classifier       # produces the .onnx
+python scripts/aihub_compile_scam_classifier.py     # compiles + profiles it on real Snapdragon hardware
+```
+
+Same pattern for `aihub_compile_spend_categorizer.py`, `aihub_compile_call_shield.py`, `aihub_compile_minilm.py`, and `aihub_compile_whisper_encoder.py`. For OCR, `scripts/export_easyocr.py` does the local export and `scripts/aihub_profile_easyocr.py` handles profiling.

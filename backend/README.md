@@ -35,19 +35,25 @@ curl -s http://localhost:8000/status
 
 ```json
 {
-  "execution_path": "CPU (QNN execution provider not available on this machine)",
+  "execution_path": "Apple Neural Engine / GPU (ONNX Runtime CoreML execution provider)",
   "network_isolated": true,
   "ai_hub_models": {
     "ocr": {"active": true, "status": "..."},
     "minilm_v2_text_encoder": {"active": true, "status": "..."},
     "whisper_encoder": {"active": true, "status": "..."}
+  },
+  "call_shield_speech_to_text": {
+    "tier_1_snapdragon_ai_hub": {"active": true, "status": "..."},
+    "tier_2_whisper_cpp": {"active": true, "status": "whisper.cpp / GGUF (ggml hardware backend — Metal, CUDA, Vulkan, or CPU, auto-detected at build time)"}
   }
 }
 ```
 
+Call Shield's speech-to-text is three tiers deep — the Snapdragon-specific encoder above, then [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp)/GGUF (a real binding, `pywhispercpp`, giving genuine Metal/CUDA/Vulkan acceleration on machines with no Snapdragon NPU — this dev machine included), then plain PyTorch as the final fallback. `call_shield_speech_to_text` in `/status` reports both accelerated tiers independently; see [`src/pipeline/stt.py`](../src/pipeline/stt.py) for the full chain and `requirements.txt` for why `pywhispercpp` is optional (it needs building from source for GPU acceleration, which needs `cmake` and, on macOS, a known packaging fix — [`scripts/fix_pywhispercpp_macos.py`](../scripts/fix_pywhispercpp_macos.py)).
+
 Two things behind that response are checked for real at startup, not assumed:
 
-- **Execution path** — `select_execution_providers()` ([`src/pipeline/runtime.py`](../src/pipeline/runtime.py)) calls `onnxruntime.get_available_providers()` once and picks QNN if it's there, CPU otherwise. On this dev machine (an Intel Mac) that's always CPU, since `onnxruntime-qnn` only ships for Windows — the code correctly reporting reality, not a bug. On a Snapdragon Windows PC, the same code takes the NPU branch with zero changes.
+- **Execution path** — `select_execution_providers()` ([`src/pipeline/runtime.py`](../src/pipeline/runtime.py)) calls `onnxruntime.get_available_providers()` once and picks the best real accelerator it reports, in order: QNN (Snapdragon NPU), CUDA (NVIDIA GPU), DirectML (Windows GPU), CoreML (Apple Neural Engine/GPU), CPU otherwise. This dev machine is an Intel Mac with no Snapdragon NPU, but it does have Apple's CoreML provider — the response above is genuinely live, not a stand-in for what CPU would say. On a Snapdragon Windows PC, the same code takes the NPU branch with zero changes; QNN, CUDA, and DirectML are verified at the selection-logic level (`tests/test_runtime.py` mocks each), not on real hardware this project has access to.
 - **Network isolation** — [`network_guard.py`](../src/pipeline/network_guard.py) patches `socket.socket.connect` to reject anything non-loopback, then makes a real connection attempt to `8.8.8.8:53` to confirm its own patch actually rejected it. If that check fails, the server refuses to start rather than silently serving requests over an unproven "offline" claim.
 
 ## The ONNX-optional fallback, actually exercised
@@ -59,12 +65,12 @@ $ mv src/scam_detector/artifacts/classifier.onnx /tmp/classifier.onnx.bak
 $ python3 -c "from src.scam_detector.classifier import classify_scam; \
               print(classify_scam('Your account will be blocked in 2 hours unless you verify now. Click here.'))"
 [NXTSight] No classifier.onnx for task 'scam_detection' — falling back to the trained
-scikit-learn model directly (no ONNX Runtime / QNN acceleration for this task until
+scikit-learn model directly (no ONNX Runtime acceleration for this task until
 it's re-exported).
-{'is_scam': True, 'confidence': 0.863, 'reason': "Contains phrases commonly seen in scams: 'hours', 'verify', 'click', 'unless'."}
+{'is_scam': True, 'confidence': 0.861, 'reason': "Contains phrases commonly seen in scams: 'hours', 'verify', 'click', 'unless'."}
 ```
 
-Same confidence score as the ONNX path on the same input — the fallback is the same math, just without ONNX Runtime or QNN in the loop. OCR and speech-to-text have their own equivalent fallbacks (AI Hub-compiled model → local PyTorch model), and every failure mode returns a plain string instead of crashing:
+Same confidence score as the ONNX path on the same input — the fallback is the same math, just without ONNX Runtime in the loop. (The exact number shifts by a thousandth or two depending on which execution provider is active — CoreML's floating-point kernels aren't bit-identical to CPU's, 0.861 here vs. 0.863 on plain CPU — never enough to flip a verdict, and re-checked live on both paths before writing this down.) OCR and speech-to-text have their own equivalent fallbacks (AI Hub-compiled model → local PyTorch model), and every failure mode returns a plain string instead of crashing:
 
 ```bash
 curl -s -X POST http://localhost:8000/scam-shield/screenshot -F "file=@/tmp/garbage.png"
@@ -145,4 +151,4 @@ Step 5 is the actual pitch: a scam message flagged moments ago automatically pau
 python -m pytest tests/test_backend.py -v
 ```
 
-11 tests hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real speech-to-text, no mocks. Part of the full suite (`python -m pytest`, 148 tests total).
+11 tests hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real speech-to-text, no mocks. Part of the full suite (`python -m pytest`, 159 tests total).

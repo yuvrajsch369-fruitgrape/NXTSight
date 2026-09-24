@@ -76,10 +76,10 @@ from src.pipeline import network_guard
 network_guard.install()
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
-from src.pipeline import ocr_qai_hub, text_encoder, whisper_qai_hub
+from src.pipeline import ocr_qai_hub, text_encoder, whisper_cpp, whisper_qai_hub
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
-from src.pipeline.runtime import select_execution_providers
+from src.pipeline.runtime import badge_variant_for, select_execution_providers
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
 from src.spend_categorizer.receipt_parser import process_receipt_screenshot
@@ -174,18 +174,18 @@ inject_theme()
 
 hero(
     "NXTSight",
-    "Your on-device shield against financial fraud — built for the Snapdragon AI Lab Build &amp; Present Challenge",
+    "Your on-device shield against financial fraud — no cloud, no account, nothing leaves the device",
     icon="⟡",
 )
 
 vision_cta(
     "pages/✦_Future_Vision.py",
     "Future Vision",
-    "where NXTSight goes from here — not just the hackathon build.",
+    "where NXTSight goes from here — not just today's build.",
 )
 
 _, execution_description = select_execution_providers()
-is_on_npu = execution_description.startswith("Snapdragon NPU")
+execution_badge_variant = badge_variant_for(execution_description)
 
 try:
     network_guard.verify_blocked()
@@ -199,22 +199,27 @@ if not network_isolation_ok:
     st.stop()
 
 badge_row(
-    ("npu" if is_on_npu else "cpu", f"» {execution_description}"),
+    (execution_badge_variant, f"» {execution_description}"),
     ("safe", "✓ Network blocked &amp; verified — inference needs no network"),
 )
 
 ocr_ai_hub_active, ocr_ai_hub_status = ocr_qai_hub.status()
 minilm_ai_hub_active, minilm_ai_hub_status = text_encoder.status()
 whisper_ai_hub_active, whisper_ai_hub_status = whisper_qai_hub.status()
-with st.expander("Which real AI Hub models are active right now?"):
+whisper_cpp_active, whisper_cpp_status = whisper_cpp.status()
+with st.expander("Which real acceleration is active right now?"):
     status_dots(
         ("OCR", ocr_ai_hub_active),
         ("MiniLM-v2", minilm_ai_hub_active),
-        ("Whisper encoder", whisper_ai_hub_active),
+        ("Whisper (Snapdragon path)", whisper_ai_hub_active),
+        ("Whisper (whisper.cpp)", whisper_cpp_active),
     )
-    st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✓ AI Hub-compiled model active' if ocr_ai_hub_active else '○ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
-    st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✓ AI Hub-compiled model active' if minilm_ai_hub_active else '○ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
-    st.write(f"**Whisper encoder (Call Shield, decoder stays local):** {'✓ AI Hub-compiled model active' if whisper_ai_hub_active else '○ fallback (local Whisper tiny.en)'} — {whisper_ai_hub_status}")
+    st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✓ hardware-accelerated model active' if ocr_ai_hub_active else '○ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
+    st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✓ hardware-accelerated model active' if minilm_ai_hub_active else '○ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
+    st.write(f"**Call Shield speech-to-text — tier 1, Snapdragon-specific:** {'✓ active' if whisper_ai_hub_active else '○ not active'} — {whisper_ai_hub_status}")
+    st.write(f"**Call Shield speech-to-text — tier 2, whisper.cpp (Metal/CUDA/Vulkan):** {'✓ active' if whisper_cpp_active else '○ not active'} — {whisper_cpp_status}")
+    if not whisper_ai_hub_active and not whisper_cpp_active:
+        st.caption("Neither accelerated tier is active — Call Shield still works, on plain PyTorch CPU.")
 
 st.warning(
     "**◐ This is a live working prototype, not the finished product.** You're pasting text or "

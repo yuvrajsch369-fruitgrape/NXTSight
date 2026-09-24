@@ -1,12 +1,24 @@
 """Speech-to-text stage of the NXTSight pipeline: turn a call recording into text.
 
-Prefers running through Qualcomm AI Hub's compiled Whisper-tiny encoder
-(src/pipeline/whisper_qai_hub.py) — decoding stays on qai_hub_models' own,
-unmodified PyTorch decode loop; nothing autoregressive runs through ONNX.
-Falls back to OpenAI's Whisper ("tiny.en", fully on-device via PyTorch,
-the same way OCR falls back to EasyOCR's own PyTorch inference) if that
-path isn't available for any reason. Either way the contract never
-changes: a real transcript, or a clear "Error: ..." string, never a crash.
+Three-tier priority, fastest-and-most-specific first, always-available
+last:
+
+    1. Qualcomm AI Hub's compiled Whisper-tiny encoder
+       (src/pipeline/whisper_qai_hub.py) — the fastest path, but only on
+       a genuine Snapdragon NPU (27.8ms, measured — see README). Decoding
+       stays on qai_hub_models' own unmodified PyTorch loop; nothing
+       autoregressive runs through ONNX.
+    2. whisper.cpp / GGUF (src/pipeline/whisper_cpp.py) — real hardware
+       acceleration on whatever this machine actually has (Metal, CUDA,
+       or Vulkan, auto-detected by ggml at build time), for every machine
+       that isn't a Snapdragon NPU. Optional — not in the base
+       requirements, see requirements.txt.
+    3. OpenAI's Whisper ("tiny.en", fully on-device via PyTorch) — the
+       final, always-available fallback, the same way OCR falls back to
+       EasyOCR's own PyTorch inference.
+
+Either way the contract never changes: a real transcript, or a clear
+"Error: ..." string, never a crash.
 
 Deliberately WAV-only: Whisper's own audio loader (either path) shells out
 to a system `ffmpeg` binary for other formats, which isn't installed on
@@ -24,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.pipeline import whisper_qai_hub
+from src.pipeline import whisper_cpp, whisper_qai_hub
 
 logger = logging.getLogger("nxtsight")
 
@@ -104,18 +116,26 @@ def extract_text_from_audio(path) -> str:
     try:
         text = whisper_qai_hub.transcribe_qai_hub(audio, TARGET_SAMPLE_RATE)
     except Exception as e:
-        logger.warning(
-            "AI Hub Whisper encoder path unavailable (%s: %s) — falling back to local "
-            "Whisper 'tiny.en' (plain PyTorch) inference.",
+        logger.info(
+            "AI Hub Whisper encoder path unavailable (%s: %s) — trying whisper.cpp/GGUF next.",
             type(e).__name__,
             e,
         )
         try:
-            model = _get_model()
-            result = model.transcribe(audio, fp16=False)
+            text = whisper_cpp.transcribe_whisper_cpp(audio, TARGET_SAMPLE_RATE)
         except Exception as e:
-            return f"Error: speech-to-text failed on '{path}' ({e})"
-        text = result.get("text", "").strip()
+            logger.warning(
+                "whisper.cpp/GGUF path unavailable (%s: %s) — falling back to local "
+                "Whisper 'tiny.en' (plain PyTorch) inference.",
+                type(e).__name__,
+                e,
+            )
+            try:
+                model = _get_model()
+                result = model.transcribe(audio, fp16=False)
+            except Exception as e:
+                return f"Error: speech-to-text failed on '{path}' ({e})"
+            text = result.get("text", "").strip()
 
     if not text:
         return f"Error: no speech detected in '{path}'"

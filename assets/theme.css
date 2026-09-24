@@ -412,6 +412,14 @@ hr {
   color: #93c5fd;
 }
 
+/* a real hardware accelerator, just not the Snapdragon NPU this app is
+   built for — CUDA / DirectML / CoreML land here */
+.nxt-badge.nxt-badge-accel {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.10);
+  color: #fcd34d;
+}
+
 .nxt-badge.nxt-badge-safe {
   border-color: rgba(34, 197, 94, 0.4);
   background: rgba(34, 197, 94, 0.10);

@@ -1,5 +1,9 @@
 # NXTSight — on-device pipeline dependencies
-# Target runtime: Snapdragon X Elite NPU (Hexagon) via Qualcomm AI Hub / ONNX Runtime QNN EP
+# Target runtime: whatever real accelerator ONNX Runtime finds on this
+# machine — Snapdragon NPU (QNN), NVIDIA GPU (CUDA), Windows GPU (DirectML),
+# or Apple Neural Engine/GPU (CoreML) — CPU always as the universal
+# fallback. See src/pipeline/runtime.py for the priority order and honest
+# per-vendor testing notes.
 #
 # Every version below is pinned exactly (captured from a real working
 # install, not guessed) so that `pip install -r requirements.txt` gives
@@ -7,29 +11,35 @@
 # is newest on the day they happen to install it. If you need to bump a
 # version, do it deliberately, re-run the full test suite, and re-pin —
 # don't just delete the "==".
-
-# Qualcomm AI Hub: compile + profile models for on-device NPU execution
-# (used by scripts/aihub_*.py). qai-hub-models is intentionally NOT listed
-# here — it's only needed for the one optional `python -m
-# qai_hub_models.models.easyocr.export` CLI workflow (see README), and
-# pulls in plain `opencv-python`, which silently conflicts with the
-# `opencv-python-headless` that easyocr needs below (both install a `cv2`
-# package at the same path; whichever installs second wins, non-
-# deterministically). Install qai-hub-models separately only if you're
-# running that specific export command.
-qai-hub==0.55.0
+#
+# Nothing in this file requires a Qualcomm AI Hub account, a network call,
+# or any Snapdragon-specific tooling — `pip install -r requirements.txt`
+# then `streamlit run app.py` runs entirely on whatever hardware ONNX
+# Runtime finds locally. qai-hub (the raw SDK used to submit real
+# compile/profile jobs to Qualcomm's cloud) and qai-hub-models (needed for
+# one optional export CLI, and for pulling in plain `opencv-python`, which
+# silently conflicts with the `opencv-python-headless` that easyocr needs
+# below — both install a `cv2` package at the same path) are both
+# deliberately left out of this base install. They're an optional extra
+# for squeezing out real, measured Snapdragon-specific performance later
+# (see the "Snapdragon / Qualcomm AI Hub" section in README.md) — install
+# them yourself, separately, only if you're actually compiling for
+# Snapdragon or running that one export command:
+#     pip install qai-hub qai-hub-models
 
 # On-device inference runtime. onnxruntime-qnn ships ONNX Runtime with the
 # QNN execution provider, which is how a compiled model actually reaches the
 # Snapdragon Hexagon NPU — but it only publishes Windows/Linux-ARM wheels,
 # and its version numbers do NOT track plain onnxruntime's (it's on its own
 # 1.20.x/2.x line). Everywhere else (this dev Mac included) we install
-# plain onnxruntime, and src/pipeline/runtime.py auto-detects which one is
-# present at startup and falls back to the CPU provider when QNN isn't
-# available. The onnxruntime-qnn pin below is UNVERIFIED on this machine
-# (no Windows/ARM hardware to test on) — if it fails to install or import
-# on the real Snapdragon device, check https://pypi.org/project/onnxruntime-qnn/
-# for the current version list and adjust.
+# plain onnxruntime — which already ships CUDA/DirectML/CoreML execution
+# providers for the platforms that support them, no extra package needed —
+# and src/pipeline/runtime.py auto-detects at startup which real
+# accelerator is actually present, falling back to CPU if none are. The
+# onnxruntime-qnn pin below is UNVERIFIED on this machine (no Windows/ARM
+# hardware to test on) — if it fails to install or import on the real
+# Snapdragon device, check https://pypi.org/project/onnxruntime-qnn/ for
+# the current version list and adjust.
 onnx==1.19.1  # newer onnx defaults to an IR version this onnxruntime can't load
 onnxruntime==1.19.2; sys_platform != "win32"
 onnxruntime-qnn==1.20.0; sys_platform == "win32"
@@ -107,6 +117,27 @@ tokenizers==0.20.3
 # genuinely clean venv, not a one-off — this isn't hypothetical.
 numba==0.60.0
 openai-whisper==20250625
+
+# Optional, faster middle tier ahead of the plain-PyTorch fallback above:
+# whisper.cpp (GGUF), via the pywhispercpp binding, gives Call Shield real
+# hardware acceleration (Metal / CUDA / Vulkan, auto-detected by ggml at
+# build time) on machines that have no Snapdragon NPU — this dev Mac
+# included, which previously ran speech-to-text on pure CPU PyTorch and
+# now genuinely uses Metal. Deliberately NOT pinned/installed here: it's
+# optional (src/pipeline/whisper_cpp.py degrades to the PyTorch fallback
+# above if it's missing), and getting Metal/CUDA/Vulkan support means
+# building from source, which needs a C++ toolchain (already present via
+# Xcode Command Line Tools on this Mac) and `cmake` (not preinstalled
+# here — pip install it, don't assume Homebrew):
+#     pip install cmake
+#     pip install pywhispercpp==1.5.1 --no-binary pywhispercpp
+# CONFIRMED, REPRODUCIBLE macOS-only bug in that source build: the
+# compiled .dylib/.so files get an install-time rpath pointing at pip's
+# temporary build directory, which is deleted right after — every file
+# actually lands correctly in site-packages, the rpath just points
+# nowhere. Reproduced twice in a row on this machine, not a one-off.
+# Fix (safe to re-run, no-ops if already fixed):
+#     python scripts/fix_pywhispercpp_macos.py
 
 # Demo UI (app.py) — a minimal local web app, no login/accounts, so the
 # on-device pipeline can be tried live without wiring up a real phone feed.
