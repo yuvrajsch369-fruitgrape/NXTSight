@@ -36,6 +36,7 @@ Five real models, none of them calling out to a cloud API:
 - **`openai/whisper-tiny`** — Call Shield's speech-to-text, three tiers deep: the Snapdragon-specific ONNX-exported encoder when that hardware is present, whisper.cpp/GGUF (real Metal/CUDA/Vulkan acceleration everywhere else) as the second tier, plain PyTorch as the final fallback. The autoregressive decoder never runs through anything hand-converted — see [The On-Device Pipeline](#the-on-device-pipeline).
 - **EasyOCR** — the detector + recognizer behind Scam Shield and the Receipt Scanner's screenshot reading.
 - **Three `scikit-learn LogisticRegression` heads** (scam / spend / call) — trained locally on hand-labeled data, sitting on top of MiniLM's embeddings. Not from any model zoo; these are NXTSight's own.
+- **Qwen2.5-1.5B-Instruct** (GGUF, Q4_K_M, via `llama-cpp-python`) — a local LLM second opinion for Scam Shield and Money Insight only, called only when the fast classifier's own confidence is genuinely ambiguous. See [The On-Device Pipeline](#the-on-device-pipeline) below for why and when.
 
 Every one of those ships a portable, vendor-neutral `.onnx` file (hand-exported where the default tooling didn't cooperate — see [`onnx_export.py`](src/pipeline/onnx_export.py)) that runs on whatever hardware accelerator is actually present — see [The On-Device Pipeline](#the-on-device-pipeline) below. On top of that, all seven (the five models above, split into 7 artifacts — EasyOCR is two stages, Whisper's encoder is separate from its decoder) have additionally been compiled and profiled on **real Snapdragon X Elite hardware** through Qualcomm AI Hub, landing at 35–41 microseconds for the three classifier heads and single-digit milliseconds for the larger encoders — genuine, measured numbers, not estimates. Full job-by-job detail is in the [appendix](#appendix-snapdragon-specific-verification) at the bottom of this README.
 
@@ -51,6 +52,10 @@ Whisper's autoregressive decoder never runs through anything hand-converted, on 
 
 If any model's `.onnx` file is missing or fails to load — a bad deploy, a cleared cache, whatever — the engine and the OCR/Whisper modules fall back to calling the plain PyTorch or scikit-learn model directly instead of crashing. The feature still works, just without the NPU-accelerated path.
 
+**A hybrid fast-path + LLM tier, for Scam Shield and Money Insight only.** MiniLM + a trained head is fast (single-digit milliseconds) but was trained on a few dozen to a couple hundred examples — genuinely uncertain on inputs unlike anything it's seen. `engine.py`'s `_maybe_escalate()` checks the *margin* between the model's top two guesses (not raw confidence alone — the right measure for an 11-way category task, where a binary confidence cutoff doesn't translate) after every fast-path prediction, and only when that margin is below a per-task threshold does it call [`llm_classifier.py`](src/pipeline/llm_classifier.py) — a local Qwen2.5-1.5B-Instruct model (GGUF, via `llama-cpp-python`), prompted with the task's own category descriptions and a JSON schema that constrains its answer to one of the real labels. Real, measured latency when it does fire: a few seconds, not milliseconds — this is why it's an escalation, not the default path. If the LLM is unavailable for any reason (not installed, model not downloaded, a malformed response), the fast path's own result is kept unchanged — escalation is strictly additive, never a new way for classification to break. Call Shield does not use this — its classifier stays exactly as it was.
+
+**The calling code has zero knowledge of any of this.** `classify_scam()` and `categorize_transactions()` call `engine.analyze(task_name, text)` and interpret a `Prediction` — they never import `onnxruntime`, reference a provider name, or know an LLM exists (checked structurally in [`tests/test_llm_escalation.py`](tests/test_llm_escalation.py)). Whether that `Prediction` came from ONNX Runtime on QNN, CoreML, CPU, or the LLM escalation is entirely engine.py's decision, hidden behind one interface — the same engine, unchanged at the call site, could serve predictions from inside a fintech's own backend instead of this standalone app.
+
 ## What runs on-device (NPU / GPU vs. CPU fallback)
 
 All of it, and the fallback is real, not theoretical:
@@ -63,26 +68,31 @@ All of it, and the fallback is real, not theoretical:
 
 ## Architecture
 
-`classify_scam()`, `categorize_transactions()`, and `analyze_call()` don't each load their own model. All three call through one shared `NXTSightEngine` ([`src/pipeline/engine.py`](src/pipeline/engine.py)) — the only piece of code that ever touches ONNX Runtime, the QNN provider, or the MiniLM encoder directly. What differs per feature is registered as a `Task`: its own trained head, its own confidence rules.
+`classify_scam()`, `categorize_transactions()`, and `analyze_call()` don't each load their own model. All three call through one shared `NXTSightEngine` ([`src/pipeline/engine.py`](src/pipeline/engine.py)) — the only piece of code that ever touches ONNX Runtime, a provider name, the MiniLM encoder, or the LLM directly. What differs per feature is registered as a `Task`: its own trained head, its own confidence rules, and — for scam/spend only — its own LLM escalation config.
 
 ```
-                         ┌───────────────────────────────────────┐
-                         │            NXTSightEngine              │
-                         │        src/pipeline/engine.py          │
-                         │                                         │
-                         │  text_guard: is this text analyzable?  │
-                         │  text_encoder: MiniLM-v2 embedding      │
-                         │  runtime: QNN (NPU) or CPU, auto-detect │
-                         └────────────────┬────────────────────────┘
-                                           │
-                            engine.analyze(task_name, text)
-                                           │
-          ┌────────────────────────────────┼────────────────────────────────┐
-          │                                │                                │
-   Task "scam_detection"        Task "spend_categorization"        Task "call_shield"
-   classify_scam(text)          categorize_transactions(texts)     analyze_call(transcript)
-   → is_scam, confidence,       → categorized, insight             → is_scam, confidence,
-     reason                                                          reason
+                         ┌────────────────────────────────────────────┐
+                         │               NXTSightEngine                │
+                         │           src/pipeline/engine.py            │
+                         │                                              │
+                         │  text_guard: is this text analyzable?       │
+                         │  text_encoder: MiniLM-v2 embedding           │
+                         │  runtime: QNN / CUDA / DirectML / CoreML /   │
+                         │           CPU — auto-detected                │
+                         │  _maybe_escalate(): fast-path margin too     │
+                         │    close? → llm_classifier.py (Qwen2.5-1.5B) │
+                         └─────────────────────┬────────────────────────┘
+                                                │
+                                 engine.analyze(task_name, text)
+                                   → one Prediction either way,
+                                     caller never knows which path
+                                                │
+          ┌─────────────────────────────────────┼─────────────────────────────────────┐
+          │                                     │                                     │
+   Task "scam_detection"             Task "spend_categorization"             Task "call_shield"
+   classify_scam(text)               categorize_transactions(texts)          analyze_call(transcript)
+   → is_scam, confidence, reason     → categorized, insight                  → is_scam, confidence, reason
+   (fast path, or LLM escalation)    (fast path, or LLM escalation)          (fast path only — no LLM tier)
 ```
 
 OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py), or the AI Hub path in [`src/pipeline/ocr_qai_hub.py`](src/pipeline/ocr_qai_hub.py)) and speech-to-text ([`src/pipeline/stt.py`](src/pipeline/stt.py), or [`src/pipeline/whisper_qai_hub.py`](src/pipeline/whisper_qai_hub.py)) sit ahead of the engine, turning an image or a recording into text before it reaches `engine.analyze()`. Payment Pause ([`src/pipeline/payment_pause.py`](src/pipeline/payment_pause.py)) sits to the side of all three, watching whatever they flag.
@@ -91,9 +101,9 @@ OCR ([`src/pipeline/ocr.py`](src/pipeline/ocr.py), or the AI Hub path in [`src/p
 
 How a request actually moves through the system, feature by feature:
 
-**Scam Shield:** screenshot → OCR extracts text → engine encodes it with MiniLM → scam classifier head scores it → verdict returned with a confidence score and the triggering phrase. If it's flagged, that flag is written to Payment Pause's log.
+**Scam Shield:** screenshot → OCR extracts text → engine encodes it with MiniLM → scam classifier head scores it → if that result is genuinely ambiguous, a local LLM gives a second opinion instead → verdict returned with a confidence score and the triggering phrase. If it's flagged, that flag is written to Payment Pause's log.
 
-**Money Insight:** pasted SMS text → engine encodes each message with MiniLM → spend classifier head sorts it into one of 11 categories → amount and debit/credit direction are pulled out separately with a regex → one summary sentence built across the batch.
+**Money Insight:** pasted SMS text → engine encodes each message with MiniLM → spend classifier head sorts it into one of 11 categories, escalating to the LLM on genuinely ambiguous ones → amount and debit/credit direction are pulled out separately with a regex → one summary sentence built across the batch.
 
 **Receipt / Bill Scanner:** screenshot → the same OCR step Scam Shield uses → merchant/amount/date pulled out with layout-aware parsing → rebuilt into a normalized sentence → handed to the exact same spend classifier as Money Insight, tagged as coming from a screenshot instead of SMS.
 
@@ -129,9 +139,11 @@ NXTSight/
 │   ├── ui/
 │   │   └── theme.py                # injects assets/theme.css + small markup helpers (hero, section, badges)
 │   ├── pipeline/
-│   │   ├── engine.py               # NXTSightEngine — the one shared object every task calls through
-│   │   ├── runtime.py              # picks QNN (NPU) vs CPU, auto-detected
+│   │   ├── engine.py               # NXTSightEngine — the one shared object every task calls through,
+│   │   │                           #   incl. _maybe_escalate() — the fast-path -> LLM decision
+│   │   ├── runtime.py              # picks QNN / CUDA / DirectML / CoreML / CPU, auto-detected
 │   │   ├── text_encoder.py         # MiniLM-v2 shared text encoder
+│   │   ├── llm_classifier.py       # local LLM second opinion (Qwen2.5-1.5B, GGUF) — optional
 │   │   ├── ocr.py / ocr_qai_hub.py # screenshot -> text (local EasyOCR / AI Hub-compiled path)
 │   │   ├── stt.py                  # audio -> text: tries whisper_qai_hub, then whisper_cpp, then local Whisper
 │   │   ├── whisper_qai_hub.py      # tier 1: AI Hub-compiled Snapdragon encoder (optional)
@@ -144,10 +156,13 @@ NXTSight/
 │   ├── scam_detector/         # Scam Shield: data, training, classifier
 │   ├── spend_categorizer/     # Money Insight + Receipt/Bill Scanner: data, training, categorizer, receipt parser
 │   └── call_shield/           # Call Shield: data, training, classifier
-├── models/                    # AI Hub-compiled artifacts (OCR, MiniLM-v2, Whisper encoder)
-├── scripts/                   # export_*.py (local ONNX export) and aihub_compile_*.py (real AI Hub jobs)
+├── models/
+│   ├── llm/                        # Qwen2.5-1.5B-Instruct GGUF weights (downloaded, not committed)
+│   └── ...                         # AI Hub-compiled artifacts (OCR, MiniLM-v2, Whisper encoder)
+├── scripts/                   # export_*.py (local ONNX export), aihub_compile_*.py (real AI Hub jobs),
+│                               #   fix_pywhispercpp_macos.py (a real macOS packaging fix, see requirements.txt)
 ├── data/samples/               # sample screenshots, call recordings, transaction text used in the demo
-├── tests/                      # 159 tests covering every module above
+├── tests/                      # 170 tests covering every module above
 ├── requirements.txt
 └── README.md
 ```
@@ -167,7 +182,7 @@ python scripts/check_setup.py   # confirms your environment is ready before you 
 streamlit run app.py
 ```
 
-Full test suite: 159 tests, all passing — `pytest` from the project root with the venv active. Nothing above touches Qualcomm AI Hub, an account, or a network call — see the appendix below if you want the Snapdragon-specific detail.
+Full test suite: 170 tests, all passing — `pytest` from the project root with the venv active. Nothing above touches Qualcomm AI Hub, an account, or a network call — see the appendix below if you want the Snapdragon-specific detail.
 
 ## Appendix: Snapdragon-specific verification
 

@@ -29,10 +29,12 @@ models/**/*.bin
 models/**/*.pt
 models/**/*.qnn
 models/**/*.zip
+models/**/*.gguf
 models/*.onnx
 models/*.bin
 models/*.pt
 models/*.qnn
+models/*.gguf
 !models/.gitkeep
 
 # Jupyter

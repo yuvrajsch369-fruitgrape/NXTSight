@@ -63,6 +63,30 @@ def _ensure_model():
     if _model_load_error is not None:
         raise RuntimeError(_model_load_error)
 
+    # CONFIRMED, REPRODUCIBLE: pywhispercpp and llama-cpp-python (see
+    # llm_classifier.py) each bundle their own independently-built copy of
+    # libggml — same library names, different builds. macOS's dynamic
+    # linker treats same-named dylibs as one shared identity: whichever
+    # package's copy loads *first* in the process wins that identity, and
+    # if the two builds' symbol sets don't fully agree, the second package
+    # to load can fail with a real dlopen "Symbol not found" error — not a
+    # hypothetical, reproduced directly: `import pywhispercpp; import
+    # llama_cpp` raises `Symbol not found: (_ggml_dsv4_hc_comb)`, while the
+    # reverse order works cleanly. This import, before pywhispercpp's own,
+    # makes llama_cpp's copy win that race whenever it's installed — a
+    # best-effort, silently-skipped-if-absent import specifically so this
+    # module's own load order doesn't depend on which of the two a caller
+    # happened to touch first. This is a real fix for the versions pinned
+    # today (llama-cpp-python 0.3.35 / pywhispercpp 1.5.1), verified by
+    # tests/test_llm_and_whisper_cpp_coexist.py — not guaranteed to survive
+    # every future version bump of either package, since the actual root
+    # cause (two independently-built ggml copies sharing dylib names) isn't
+    # something this file can fix at the source.
+    try:
+        import llama_cpp  # noqa: F401
+    except ImportError:
+        pass
+
     try:
         from pywhispercpp.model import Model
         from pywhispercpp.utils import download_model

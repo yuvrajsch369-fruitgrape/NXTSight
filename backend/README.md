@@ -45,11 +45,18 @@ curl -s http://localhost:8000/status
   "call_shield_speech_to_text": {
     "tier_1_snapdragon_ai_hub": {"active": true, "status": "..."},
     "tier_2_whisper_cpp": {"active": true, "status": "whisper.cpp / GGUF (ggml hardware backend — Metal, CUDA, Vulkan, or CPU, auto-detected at build time)"}
+  },
+  "llm_second_opinion": {
+    "scope": "scam_detection and spend_categorization only — escalated to when the fast classifier's own confidence is ambiguous, never on every message",
+    "available": true,
+    "status": "Qwen2.5-1.5B-Instruct (Q4_K_M GGUF) — available, loads on first genuinely ambiguous call"
   }
 }
 ```
 
 Call Shield's speech-to-text is three tiers deep — the Snapdragon-specific encoder above, then [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp)/GGUF (a real binding, `pywhispercpp`, giving genuine Metal/CUDA/Vulkan acceleration on machines with no Snapdragon NPU — this dev machine included), then plain PyTorch as the final fallback. `call_shield_speech_to_text` in `/status` reports both accelerated tiers independently; see [`src/pipeline/stt.py`](../src/pipeline/stt.py) for the full chain and `requirements.txt` for why `pywhispercpp` is optional (it needs building from source for GPU acceleration, which needs `cmake` and, on macOS, a known packaging fix — [`scripts/fix_pywhispercpp_macos.py`](../scripts/fix_pywhispercpp_macos.py)).
+
+Scam Shield and Money Insight have their own optional tier: `llm_second_opinion` reports whether a local Qwen2.5-1.5B-Instruct model ([`src/pipeline/llm_classifier.py`](../src/pipeline/llm_classifier.py)) is available to give a structured-JSON second opinion when [`engine.py`](../src/pipeline/engine.py)'s fast classifier is genuinely unsure (measured margin between its top two guesses, not raw confidence — see the main README's [On-Device Pipeline](../README.md#the-on-device-pipeline) section). `available: true` here is a cheap check (package importable + model file present), not a full model load — the ~1GB model only actually loads the first time a genuinely ambiguous call needs it, not at server startup, since most requests never will.
 
 Two things behind that response are checked for real at startup, not assumed:
 
@@ -151,4 +158,4 @@ Step 5 is the actual pitch: a scam message flagged moments ago automatically pau
 python -m pytest tests/test_backend.py -v
 ```
 
-11 tests hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real speech-to-text, no mocks. Part of the full suite (`python -m pytest`, 159 tests total).
+11 tests hitting every endpoint through FastAPI's `TestClient` — real inference, real OCR, real speech-to-text, no mocks. Part of the full suite (`python -m pytest`, 170 tests total).

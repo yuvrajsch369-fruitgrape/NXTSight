@@ -76,7 +76,7 @@ from src.pipeline import network_guard
 network_guard.install()
 
 from src.call_shield.classifier import analyze_call, analyze_call_recording
-from src.pipeline import ocr_qai_hub, text_encoder, whisper_cpp, whisper_qai_hub
+from src.pipeline import llm_classifier, ocr_qai_hub, text_encoder, whisper_cpp, whisper_qai_hub
 from src.pipeline.ocr import extract_text_from_image
 from src.pipeline.payment_pause import WINDOW_MINUTES, add_flag, format_age, recent_flags
 from src.pipeline.runtime import badge_variant_for, select_execution_providers
@@ -207,12 +207,14 @@ ocr_ai_hub_active, ocr_ai_hub_status = ocr_qai_hub.status()
 minilm_ai_hub_active, minilm_ai_hub_status = text_encoder.status()
 whisper_ai_hub_active, whisper_ai_hub_status = whisper_qai_hub.status()
 whisper_cpp_active, whisper_cpp_status = whisper_cpp.status()
+llm_available, llm_status = llm_classifier.status()
 with st.expander("Which real acceleration is active right now?"):
     status_dots(
         ("OCR", ocr_ai_hub_active),
         ("MiniLM-v2", minilm_ai_hub_active),
         ("Whisper (Snapdragon path)", whisper_ai_hub_active),
         ("Whisper (whisper.cpp)", whisper_cpp_active),
+        ("LLM second opinion", llm_available),
     )
     st.write(f"**OCR (Scam Shield + Receipt Scanner):** {'✓ hardware-accelerated model active' if ocr_ai_hub_active else '○ fallback (local EasyOCR/PyTorch)'} — {ocr_ai_hub_status}")
     st.write(f"**MiniLM-v2 text encoder (all 3 classifiers' backbone):** {'✓ hardware-accelerated model active' if minilm_ai_hub_active else '○ fallback (local PyTorch)'} — {minilm_ai_hub_status}")
@@ -220,6 +222,11 @@ with st.expander("Which real acceleration is active right now?"):
     st.write(f"**Call Shield speech-to-text — tier 2, whisper.cpp (Metal/CUDA/Vulkan):** {'✓ active' if whisper_cpp_active else '○ not active'} — {whisper_cpp_status}")
     if not whisper_ai_hub_active and not whisper_cpp_active:
         st.caption("Neither accelerated tier is active — Call Shield still works, on plain PyTorch CPU.")
+    st.write(f"**LLM second opinion (Scam Shield + Money Insight only):** {'✓' if llm_available else '○'} {llm_status}")
+    st.caption(
+        "Only called when the fast classifier is genuinely unsure — not on every message. "
+        "Real latency when it does fire (measured on this machine: a few seconds, not milliseconds)."
+    )
 
 st.warning(
     "**◐ This is a live working prototype, not the finished product.** You're pasting text or "

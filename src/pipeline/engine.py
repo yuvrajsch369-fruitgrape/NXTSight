@@ -30,7 +30,7 @@ representations of the same text, on purpose.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 from joblib import load
@@ -44,11 +44,22 @@ logger = logging.getLogger("nxtsight")
 
 @dataclass
 class Task:
-    """One job the engine can run: a name plus where its trained artifacts live."""
+    """One job the engine can run: a name plus where its trained artifacts live.
+
+    `llm_labels` + `llm_system_prompt` are optional: set both to let this
+    task escalate to the local LLM (src/pipeline/llm_classifier.py) when
+    the fast classifier's own result is ambiguous (see
+    NXTSightEngine._maybe_escalate below). Leave both None (the default)
+    for a task that should only ever use the fast path — e.g. Call Shield,
+    which isn't part of this escalation by design (see README).
+    """
 
     name: str
     artifacts_dir: Path
     max_chars: int = 4000
+    llm_labels: Optional[list] = None
+    llm_system_prompt: Optional[str] = None
+    llm_escalation_margin: float = 0.3
 
 
 @dataclass
@@ -59,6 +70,7 @@ class Prediction:
     confidence: float
     probabilities: np.ndarray
     text: str  # the cleaned/truncated text actually fed to the model
+    source: str = "fast"  # "fast" (the trained MiniLM+head classifier) or "llm" (escalated)
 
 
 class NXTSightEngine:
@@ -153,12 +165,67 @@ class NXTSightEngine:
             return f"the {task_name} model is unavailable right now ({type(e).__name__})"
 
         label_id = int(label)
-        return Prediction(
+        prediction = Prediction(
             label_id=label_id,
             confidence=float(probs[label_id]),
             probabilities=probs,
             text=cleaned,
         )
+        return self._maybe_escalate(task, prediction)
+
+    def _maybe_escalate(self, task: Task, prediction: Prediction) -> Prediction:
+        """If `task` is configured for LLM escalation and the fast path's
+        own result is genuinely ambiguous, ask the local LLM for a second
+        opinion and use it. "Ambiguous" is the margin between the top two
+        class probabilities, not raw confidence alone — the right measure
+        for both a binary task (scam: margin = |p(scam) - p(legit)|) and a
+        multi-class one (spend: how much the top guess actually beat the
+        runner-up), whereas a fixed confidence cutoff only makes sense for
+        binary. Any failure along this path — LLM not installed, model not
+        downloaded, malformed output, anything — is caught and the
+        original fast-path Prediction is returned unchanged: escalation is
+        strictly additive, never a new way for classification to break.
+        """
+        if task.llm_labels is None or task.llm_system_prompt is None:
+            return prediction
+
+        sorted_probs = np.sort(prediction.probabilities)[::-1]
+        margin = float(sorted_probs[0] - sorted_probs[1]) if len(sorted_probs) > 1 else 1.0
+        if margin >= task.llm_escalation_margin:
+            return prediction  # confident enough — not worth the LLM's latency
+
+        try:
+            from src.pipeline import llm_classifier
+
+            result = llm_classifier.classify(
+                prediction.text, labels=task.llm_labels, system_prompt=task.llm_system_prompt
+            )
+            label_id = task.llm_labels.index(result["label"])
+            probabilities = np.zeros(len(task.llm_labels), dtype=np.float32)
+            probabilities[label_id] = result["confidence"]
+            logger.info(
+                "Task '%s' escalated to LLM (fast-path margin %.2f < %.2f) -> %s (%.2f)",
+                task.name,
+                margin,
+                task.llm_escalation_margin,
+                result["label"],
+                result["confidence"],
+            )
+            return Prediction(
+                label_id=label_id,
+                confidence=result["confidence"],
+                probabilities=probabilities,
+                text=prediction.text,
+                source="llm",
+            )
+        except Exception as e:
+            logger.info(
+                "Task '%s': LLM escalation unavailable (%s: %s) — keeping the fast-path result.",
+                task.name,
+                type(e).__name__,
+                e,
+            )
+            return prediction
 
     def vocabulary_terms(self, task_name: str, text: str) -> set:
         """Tokens/n-grams `text` produces under the task's vectorizer.

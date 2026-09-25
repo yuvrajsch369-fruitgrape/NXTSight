@@ -21,7 +21,40 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 TASK_NAME = "scam_detection"
 REASON_TERMS_SHOWN = 4
 
-engine.register_task(Task(name=TASK_NAME, artifacts_dir=ARTIFACTS_DIR, max_chars=4000))
+# label_id 0 = legit, 1 = scam — must match how train_classifier.py encodes
+# labels (`1 if is_scam else 0`), since engine._maybe_escalate() maps the
+# LLM's chosen label back to a label_id via this list's index.
+LLM_LABELS = ["legit", "scam"]
+LLM_SYSTEM_PROMPT = (
+    "You are a fraud-detection classifier for Indian bank/UPI text messages. "
+    "Decide if a message is a SCAM or LEGIT.\n\n"
+    "Common scam patterns: fake KYC-update threats, requests to share an OTP "
+    "or PIN, fake lottery/prize wins, digital-arrest or police-impersonation "
+    "threats, fake courier/customs fees, urgent account-suspension threats "
+    "with a link, too-good-to-be-true investment offers, fake tech support.\n\n"
+    "Legit messages: routine bank/UPI transaction confirmations, real OTPs "
+    "sent by a bank for a purchase the user is actively making (not "
+    "requested by the message itself), calendar/appointment reminders, "
+    "everyday personal messages.\n\n"
+    "confidence is a decimal between 0.0 and 1.0."
+)
+
+engine.register_task(
+    Task(
+        name=TASK_NAME,
+        artifacts_dir=ARTIFACTS_DIR,
+        max_chars=4000,
+        llm_labels=LLM_LABELS,
+        llm_system_prompt=LLM_SYSTEM_PROMPT,
+        # 0.35, not the Task default of 0.3 — calibrated against real
+        # examples: this classifier is generally very peaked (most real
+        # messages land above 0.5 margin even when "borderline-sounding"),
+        # but a genuinely ambiguous legit message (a refund notice) landed
+        # at 0.327 — 0.35 reliably catches that band without escalating on
+        # every message. See tests/test_llm_escalation.py.
+        llm_escalation_margin=0.35,
+    )
+)
 
 _top_terms = None
 

@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from src.pipeline import network_guard
+from src.pipeline import llm_classifier, network_guard
 from src.pipeline.ocr import extract_text_from_image
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
@@ -68,3 +68,26 @@ def test_scam_classifier_works_with_network_blocked(guarded):
 def test_spend_categorizer_works_with_network_blocked(guarded):
     result = categorize_transactions(["Rs 450.00 debited from A/c XX1234 at SWIGGY BANGALORE on 12-Sep-25."])
     assert result["categorized"][0]["category"] == "Food & Dining"
+
+
+def test_llm_escalation_works_with_network_blocked(guarded):
+    """The whole point of loading the LLM from a literal local .gguf path
+    (never a HuggingFace repo id) rather than an integrated model-hub
+    loader: proves it here, the same way the MiniLM/Whisper offline gotchas
+    earlier in this project were only ever caught by testing the real
+    blocked-network case, not assumed from reading the loading code.
+    Skips (rather than failing) if the optional LLM isn't installed in
+    this environment — same pattern as every other optional accelerated
+    path in this suite."""
+    active, _ = llm_classifier.status()
+    if not active:
+        pytest.skip("LLM not installed/downloaded in this environment — see requirements.txt")
+
+    # A deliberately ambiguous message (confirmed elsewhere to sit right at
+    # the escalation margin for scam_detection) — this must genuinely
+    # trigger the LLM call, not just exercise the fast path, for this test
+    # to prove anything about the LLM's own network behavior.
+    result = classify_scam(
+        "A refund of Rs 2,340 has been initiated for your cancelled order and will reflect in 3-5 business days."
+    )
+    assert isinstance(result["is_scam"], bool)

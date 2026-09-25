@@ -139,6 +139,46 @@ openai-whisper==20250625
 # Fix (safe to re-run, no-ops if already fixed):
 #     python scripts/fix_pywhispercpp_macos.py
 
+# Local LLM second opinion for Scam Shield and Money Insight (scam_detection
+# and spend_categorization only — Call Shield doesn't use this): when the
+# fast MiniLM+head classifier's own confidence is genuinely ambiguous (see
+# the llm_escalation_margin comments in src/scam_detector/classifier.py and
+# src/spend_categorizer/categorizer.py), engine.py escalates to a small
+# local Qwen2.5-1.5B-Instruct model via structured-JSON prompting — never
+# on every message, only the unsure ones (measured: ~2.5-9.5s per call on
+# this dev machine, so paying that on every message would make the app feel
+# broken). Optional: src/pipeline/llm_classifier.py degrades to "no
+# escalation, fast-path result only" if either piece below is missing.
+#
+# 1. The Python binding — same ggml/GGUF ecosystem as pywhispercpp above,
+#    same story: the plain PyPI wheel is CPU-only, real GPU offload (Metal
+#    on macOS, CUDA on NVIDIA, Vulkan elsewhere) needs a source build:
+#        pip install llama-cpp-python==0.3.35
+#    That alone already builds Metal support on macOS (ggml enables it by
+#    default on Apple platforms, confirmed via a real load — see README).
+#    For CUDA specifically, set CMAKE_ARGS before installing:
+#        CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python==0.3.35 --no-cache-dir
+#    Unlike pywhispercpp, this build did NOT hit the same rpath bug on this
+#    machine — no separate fixup script needed for this one.
+#
+# 2. The model weights (~1.07GB, Qwen's own official GGUF export, no
+#    license gate, no HuggingFace account needed):
+#        mkdir -p models/llm && curl -L -o models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+#          https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
+#    A one-time download, same "needs internet once, fully offline after"
+#    pattern as EasyOCR/Whisper's model weights — loaded from that literal
+#    local path at runtime, never a HuggingFace repo id, so there's no
+#    download-on-first-use behavior for network_guard to catch.
+#
+# Honest limitation, not a footnote: pip's requirements.txt / environment
+# markers can express *platform* conditionals (see onnxruntime-qnn's
+# `sys_platform == "win32"` above) but cannot detect *runtime hardware*
+# (whether a GPU is actually present) at install time — that's simply
+# outside what a requirements.txt file can do. What's conditional here is
+# expressed the only way it honestly can be: build flags you choose based
+# on your own hardware, documented above, not a magic auto-detecting pip
+# install.
+
 # Demo UI (app.py) — a minimal local web app, no login/accounts, so the
 # on-device pipeline can be tried live without wiring up a real phone feed.
 streamlit==1.63.0
