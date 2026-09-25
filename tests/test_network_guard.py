@@ -91,3 +91,33 @@ def test_llm_escalation_works_with_network_blocked(guarded):
         "A refund of Rs 2,340 has been initiated for your cancelled order and will reflect in 3-5 business days."
     )
     assert isinstance(result["is_scam"], bool)
+
+
+def test_llm_classifier_direct_call_never_touches_network_under_any_circumstance(guarded):
+    """A stricter re-verification of the test above: that one goes through
+    engine._maybe_escalate()'s ambiguity-margin gate, so whether it
+    genuinely exercises the LLM depends on today's fast-path classifier
+    landing in the ambiguous band for that one specific message — true
+    now, but not something this test can guarantee stays true as the
+    classifier or its training data changes.
+
+    This test instead calls llm_classifier.classify() directly, the same
+    function engine.py calls after deciding to escalate — guaranteeing a
+    real llama-cpp-python inference call happens, every run, regardless of
+    any classifier's confidence on any input. If that call reached the
+    network in any way, network_guard's patched socket.connect() would
+    raise NetworkBlockedError instead of returning a result — so a clean
+    return here is a direct, unconditional proof, not an inference from
+    reading llm_classifier.py's loading code."""
+    active, _ = llm_classifier.status()
+    if not active:
+        pytest.skip("LLM not installed/downloaded in this environment — see requirements.txt")
+
+    result = llm_classifier.classify(
+        "A refund of Rs 2,340 has been initiated for your cancelled order and will reflect in 3-5 business days.",
+        labels=["legit", "scam"],
+        system_prompt="You are a fraud-detection classifier for Indian bank/UPI text messages. "
+        "Decide if a message is a SCAM or LEGIT. confidence is a decimal between 0.0 and 1.0.",
+    )
+    assert result["label"] in ("legit", "scam")
+    assert 0.0 <= result["confidence"] <= 1.0
