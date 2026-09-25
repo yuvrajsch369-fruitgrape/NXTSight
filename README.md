@@ -1,6 +1,8 @@
 # NXTSight
 
-NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, and every classifier — with no server call involved in a single prediction. It automatically uses whatever hardware accelerator the machine actually has (Snapdragon NPU, NVIDIA/Windows GPU, Apple Neural Engine) and falls back to plain CPU otherwise — same code, same result, either way. Nothing about that "no cloud" claim is a design nicety: it's the whole reason a bank could ever plug this into a real payment flow.
+NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, every classifier — with no server call involved in a single prediction. Nothing about that "no cloud" claim is a design nicety: it's the whole reason a bank could ever plug this into a real payment flow.
+
+It runs on any modern PC. At startup it checks what hardware is actually there and automatically uses the fastest real accelerator it finds — a Snapdragon NPU, an NVIDIA or Windows GPU, an Apple Neural Engine — falling back to plain CPU if none of those are present. Same code, same result, either way; nothing to configure. Snapdragon's Hexagon NPU is the fastest path NXTSight supports today (see the measured numbers in the [appendix](#appendix-snapdragon-specific-verification)) — the platform it's been tuned and specifically verified against — but it's one path among several, not the only one this runs on.
 
 ## The problem
 
@@ -60,11 +62,21 @@ If any model's `.onnx` file is missing or fails to load — a bad deploy, a clea
 
 All of it, and the fallback is real, not theoretical:
 
-- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the hardware-abstracted engine today. `select_execution_providers()` picks the best real accelerator ONNX Runtime reports — QNN, CUDA, DirectML, CoreML, in that order — CPU otherwise, and every path is covered by its own test (`tests/test_runtime.py`), not just described.
+- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the hardware-abstracted engine today. `select_execution_providers()` picks the best real accelerator ONNX Runtime reports — QNN, CUDA, DirectML, CoreML, in that order — CPU otherwise, and every path is covered by its own test (`tests/test_runtime.py`) that runs the real production classifier model, not a synthetic stand-in — see the table below for exactly what that does and doesn't prove per path.
 - **OCR** prefers the AI Hub-compiled detector/recognizer through the same hardware-abstracted path, and falls back to EasyOCR's own PyTorch reader (CPU-only) if the compiled models aren't present.
 - **Call Shield's speech-to-text** tries the AI Hub-compiled Whisper encoder first (decoder always on local PyTorch), then whisper.cpp/GGUF for real Metal/CUDA/Vulkan acceleration, then falls back to OpenAI's own Whisper package entirely if neither accelerated tier is available.
 
-**Genuinely verified, not just two theoretical branches:** this dev machine is an Intel Mac with no Snapdragon NPU, but it does have Apple's CoreML execution provider — and the badge on screen now honestly shows **"Apple Neural Engine / GPU (ONNX Runtime CoreML execution provider)"** here, confirmed by actually running the scam classifier through it end to end (same 0.861 confidence as the CPU path, byte-identical result — CoreML doesn't change what the model says, only how fast it runs). QNN, CUDA, and DirectML are exercised with the real selection *logic* (`tests/test_runtime.py` mocks `get_available_providers()` to simulate each), not on real hardware — this codebase doesn't have a Snapdragon, NVIDIA, or Windows-GPU machine to test on directly. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the NPU path automatically. Worst case, if none of the accelerators activate on a given machine, the CPU fallback is the same code already running in CI — not a separate untested branch.
+**Tested honestly, path by path — here's exactly what's real hardware versus simulated:**
+
+| Path | Decision logic tested | Real model runs on it | Genuine hardware exercised |
+|---|---|---|---|
+| CoreML (Apple Neural Engine/GPU) | ✅ | ✅ | ✅ — this dev machine has it; the badge on screen genuinely reads "Apple Neural Engine / GPU", confirmed by running the real scam classifier through it (0.861 confidence, same verdict as CPU) |
+| CPU (no accelerator) | ✅ | ✅ | ✅ — the universal fallback, exercised on every test run |
+| QNN (Snapdragon NPU) | ✅ | ✅ | ❌ — no Snapdragon device to test on directly (see the [appendix](#appendix-snapdragon-specific-verification) for the separate, real Snapdragon hardware verification via Qualcomm AI Hub, which *is* genuine physical-chip evidence, just not through this exact code path) |
+| CUDA (NVIDIA GPU) | ✅ | ✅ | ❌ — no NVIDIA GPU available to this project |
+| DirectML (Windows GPU) | ✅ | ✅ | ❌ — no Windows-GPU machine available to this project |
+
+"Decision logic tested" means `tests/test_runtime.py` mocks `onnxruntime.get_available_providers()` to simulate each provider being present and checks `select_execution_providers()` picks it correctly. "Real model runs on it" is a step further, closing a real gap a decision-only test would miss: with each provider mocked as available, NXTSight's actual `classifier.onnx` (not a toy graph) is loaded and run through `create_inference_session()` for real, and — for QNN, CUDA, and DirectML specifically — checked to reach the *same verdict* as every other path on the same input. What none of this proves for QNN/CUDA/DirectML is that the acceleration itself is genuine: without the physical chip, ONNX Runtime silently falls back to CPU under the hood (a real, confirmed `UserWarning`, not a guess) even though the code path — every line `create_inference_session()` runs — executes for real. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the genuine NPU path automatically; worst case, if no accelerator activates on a given machine, the CPU fallback is the same code already running in CI, not a separate untested branch.
 
 ## Architecture
 
@@ -131,6 +143,7 @@ NXTSight/
 ├── pages/
 │   └── ✦_Future_Vision.py    # a separate page: where this could go beyond today's build
 ├── FUTURE_VISION.md           # source text for the Future Vision page
+├── PROJECT_DESCRIPTION.md     # a shorter, pitch-oriented overview alongside this README
 ├── assets/theme.css           # the shared dark theme — fonts, gradients, cards, animations
 ├── backend/                   # FastAPI service exposing all five features over HTTP
 │   ├── main.py                     # uvicorn backend.main:app
