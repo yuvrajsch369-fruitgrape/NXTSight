@@ -2,7 +2,7 @@
 
 NXTSight is a small on-device engine with two jobs: read a message and tell you, in plain language, whether it looks like a scam and why, and read your transaction messages and tell you, in plain language, where your money is going. Everything runs locally on the machine — screenshot OCR, speech-to-text, every classifier — with no server call involved in a single prediction. Nothing about that "no cloud" claim is a design nicety: it's the whole reason a bank could ever plug this into a real payment flow.
 
-It runs on any modern PC. At startup it checks what hardware is actually there and automatically uses the fastest real accelerator it finds — a Snapdragon NPU, an NVIDIA or Windows GPU, an Apple Neural Engine — falling back to plain CPU if none of those are present. Same code, same result, either way; nothing to configure. Snapdragon's Hexagon NPU is the fastest path NXTSight supports today (see the measured numbers in the [appendix](#appendix-snapdragon-specific-verification)) — the platform it's been tuned and specifically verified against — but it's one path among several, not the only one this runs on.
+It runs on any modern PC. At startup it checks what hardware is actually there and automatically uses the fastest real accelerator it finds — a Snapdragon NPU, an NVIDIA GPU, an Intel NPU/GPU, a Windows GPU, an Apple Neural Engine — falling back to plain CPU if none of those are present. Same code, same result, either way; nothing to configure. Snapdragon's Hexagon NPU is the fastest path NXTSight supports today (see the measured numbers in the [appendix](#appendix-snapdragon-specific-verification)) — the platform it's been tuned and specifically verified against — but it's one path among several, not the only one this runs on.
 
 ## The problem
 
@@ -44,7 +44,7 @@ Every one of those ships a portable, vendor-neutral `.onnx` file (hand-exported 
 
 ## The On-Device Pipeline
 
-Every model in NXTSight — OCR, the MiniLM encoder, the Whisper encoder, all three classifier heads — loads through exactly one function: `runtime.create_inference_session()`. That function is a small hardware-abstraction layer over ONNX Runtime's own execution providers, not something hand-rolled per vendor: it checks `onnxruntime.get_available_providers()` once at startup and prefers, in order, Qualcomm's QNN provider (Snapdragon Hexagon NPU), then CUDA (NVIDIA GPU), then DirectML (any GPU on Windows), then CoreML (Apple Neural Engine/GPU), falling back to plain CPU if none of those are present. No flag to set, no separate build — same code path picks whichever real accelerator this machine actually has. This is checked live, not assumed: the app shows which path is active on screen every time it starts.
+Every model in NXTSight — OCR, the MiniLM encoder, the Whisper encoder, all three classifier heads — loads through exactly one function: `runtime.create_inference_session()`. That function is a small hardware-abstraction layer over ONNX Runtime's own execution providers, not something hand-rolled per vendor: it checks `onnxruntime.get_available_providers()` once at startup and prefers, in order, Qualcomm's QNN provider (Snapdragon Hexagon NPU), then CUDA (NVIDIA GPU), then OpenVINO (Intel NPU/GPU, Core Ultra and newer), then DirectML (any GPU on Windows), then CoreML (Apple Neural Engine/GPU), falling back to plain CPU if none of those are present. No flag to set, no separate build — same code path picks whichever real accelerator this machine actually has. This is checked live, not assumed: the app shows which path is active on screen every time it starts.
 
 OCR is the "read" step ahead of everything else for screenshot-based features — it turns an image into raw text, and that text then goes through the same pipeline as any typed message. Nothing downstream cares whether text came from OCR or from a paste box.
 
@@ -62,7 +62,7 @@ If any model's `.onnx` file is missing or fails to load — a bad deploy, a clea
 
 All of it, and the fallback is real, not theoretical:
 
-- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the hardware-abstracted engine today. `select_execution_providers()` picks the best real accelerator ONNX Runtime reports — QNN, CUDA, DirectML, CoreML, in that order — CPU otherwise, and every path is covered by its own test (`tests/test_runtime.py`) that runs the real production classifier model, not a synthetic stand-in — see the table below for exactly what that does and doesn't prove per path.
+- **Scam Shield, Money Insight, and Call Shield's classifiers** run through the hardware-abstracted engine today. `select_execution_providers()` picks the best real accelerator ONNX Runtime reports — QNN, CUDA, OpenVINO, DirectML, CoreML, in that order — CPU otherwise, and every path is covered by its own test (`tests/test_runtime.py`) that runs the real production classifier model, not a synthetic stand-in — see the table below for exactly what that does and doesn't prove per path.
 - **OCR** prefers the AI Hub-compiled detector/recognizer through the same hardware-abstracted path, and falls back to EasyOCR's own PyTorch reader (CPU-only) if the compiled models aren't present.
 - **Call Shield's speech-to-text** tries the AI Hub-compiled Whisper encoder first (decoder always on local PyTorch), then whisper.cpp/GGUF for real Metal/CUDA/Vulkan acceleration, then falls back to OpenAI's own Whisper package entirely if neither accelerated tier is available.
 
@@ -74,9 +74,18 @@ All of it, and the fallback is real, not theoretical:
 | CPU (no accelerator) | ✅ | ✅ | ✅ — the universal fallback, exercised on every test run |
 | QNN (Snapdragon NPU) | ✅ | ✅ | ❌ — no Snapdragon device to test on directly (see the [appendix](#appendix-snapdragon-specific-verification) for the separate, real Snapdragon hardware verification via Qualcomm AI Hub, which *is* genuine physical-chip evidence, just not through this exact code path) |
 | CUDA (NVIDIA GPU) | ✅ | ✅ | ❌ — no NVIDIA GPU available to this project |
+| OpenVINO (Intel NPU/GPU) | ✅ | ✅ | ❌ — no Intel-NPU/GPU-plugin hardware available to this project, and `onnxruntime-openvino` (the package that provides this exact EP) has no macOS wheels at all, so it can't even be installed on this dev machine to check — confirmed directly against every release on PyPI. Separately, and for real: `scripts/export_openvino_ir.py` converted all 7 of this project's production models to OpenVINO's native IR format with **zero unsupported-operator issues**, numerically verified against ONNX Runtime CPU output (max abs diff `1.08e-07` on MiniLM) — genuine evidence the models themselves are OpenVINO-compatible, just not proof of the runtime EP or the accelerator silicon |
 | DirectML (Windows GPU) | ✅ | ✅ | ❌ — no Windows-GPU machine available to this project |
 
-"Decision logic tested" means `tests/test_runtime.py` mocks `onnxruntime.get_available_providers()` to simulate each provider being present and checks `select_execution_providers()` picks it correctly. "Real model runs on it" is a step further, closing a real gap a decision-only test would miss: with each provider mocked as available, NXTSight's actual `classifier.onnx` (not a toy graph) is loaded and run through `create_inference_session()` for real, and — for QNN, CUDA, and DirectML specifically — checked to reach the *same verdict* as every other path on the same input. What none of this proves for QNN/CUDA/DirectML is that the acceleration itself is genuine: without the physical chip, ONNX Runtime silently falls back to CPU under the hood (a real, confirmed `UserWarning`, not a guess) even though the code path — every line `create_inference_session()` runs — executes for real. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the genuine NPU path automatically; worst case, if no accelerator activates on a given machine, the CPU fallback is the same code already running in CI, not a separate untested branch.
+"Decision logic tested" means `tests/test_runtime.py` mocks `onnxruntime.get_available_providers()` to simulate each provider being present and checks `select_execution_providers()` picks it correctly. "Real model runs on it" is a step further, closing a real gap a decision-only test would miss: with each provider mocked as available, NXTSight's actual `classifier.onnx` (not a toy graph) is loaded and run through `create_inference_session()` for real, and — for QNN, CUDA, OpenVINO, and DirectML specifically — checked to reach the *same verdict* as every other path on the same input. What none of this proves for QNN/CUDA/OpenVINO/DirectML is that the acceleration itself is genuine: without the physical chip, ONNX Runtime silently falls back to CPU under the hood (a real, confirmed `UserWarning`, not a guess) even though the code path — every line `create_inference_session()` runs — executes for real. On a real Snapdragon Windows PC with `onnxruntime-qnn` installed, the exact same code takes the genuine NPU path automatically; worst case, if no accelerator activates on a given machine, the CPU fallback is the same code already running in CI, not a separate untested branch.
+
+To reproduce the OpenVINO model-conversion check yourself (`pip install openvino==2025.4.1` — see `requirements.txt` for why that exact version and why it's optional):
+
+```bash
+python scripts/export_openvino_ir.py
+```
+
+Converts all 7 production models to `models/openvino_ir/` and prints a per-model pass/fail — that script is also what to reach for first if a *future* model addition ever doesn't convert cleanly: it reports the exact op OpenVINO's converter rejected and the real options (operator substitution, opset change — not a silent workaround), rather than guessing.
 
 ## Architecture
 
@@ -89,8 +98,9 @@ All of it, and the fallback is real, not theoretical:
                          │                                              │
                          │  text_guard: is this text analyzable?       │
                          │  text_encoder: MiniLM-v2 embedding           │
-                         │  runtime: QNN / CUDA / DirectML / CoreML /   │
-                         │           CPU — auto-detected                │
+                         │  runtime: QNN / CUDA / OpenVINO /          │
+                         │           DirectML / CoreML / CPU —        │
+                         │           auto-detected                    │
                          │  _maybe_escalate(): fast-path margin too     │
                          │    close? → llm_classifier.py (Qwen2.5-1.5B) │
                          └─────────────────────┬────────────────────────┘
@@ -154,7 +164,7 @@ NXTSight/
 │   ├── pipeline/
 │   │   ├── engine.py               # NXTSightEngine — the one shared object every task calls through,
 │   │   │                           #   incl. _maybe_escalate() — the fast-path -> LLM decision
-│   │   ├── runtime.py              # picks QNN / CUDA / DirectML / CoreML / CPU, auto-detected
+│   │   ├── runtime.py              # picks QNN / CUDA / OpenVINO / DirectML / CoreML / CPU, auto-detected
 │   │   ├── text_encoder.py         # MiniLM-v2 shared text encoder
 │   │   ├── llm_classifier.py       # local LLM second opinion (Qwen2.5-1.5B, GGUF) — optional
 │   │   ├── ocr.py / ocr_qai_hub.py # screenshot -> text (local EasyOCR / AI Hub-compiled path)
@@ -175,7 +185,7 @@ NXTSight/
 ├── scripts/                   # export_*.py (local ONNX export), aihub_compile_*.py (real AI Hub jobs),
 │                               #   fix_pywhispercpp_macos.py (a real macOS packaging fix, see requirements.txt)
 ├── data/samples/               # sample screenshots, call recordings, transaction text used in the demo
-├── tests/                      # 170 tests covering every module above
+├── tests/                      # 178 tests covering every module above
 ├── requirements.txt
 └── README.md
 ```
@@ -195,11 +205,11 @@ python scripts/check_setup.py   # confirms your environment is ready before you 
 streamlit run app.py
 ```
 
-Full test suite: 170 tests, all passing — `pytest` from the project root with the venv active. Nothing above touches Qualcomm AI Hub, an account, or a network call — see the appendix below if you want the Snapdragon-specific detail.
+Full test suite: 178 tests, all passing — `pytest` from the project root with the venv active. Nothing above touches Qualcomm AI Hub, an account, or a network call — see the appendix below if you want the Snapdragon-specific detail.
 
 ## Appendix: Snapdragon-specific verification
 
-Everything above already runs on real hardware acceleration wherever it's available — QNN, CUDA, DirectML, or CoreML, picked automatically (see [The On-Device Pipeline](#the-on-device-pipeline)). This appendix is additional, optional proof that the same models were also compiled and profiled on **real Snapdragon X Elite hardware** through Qualcomm AI Hub, for anyone who wants the specific numbers:
+Everything above already runs on real hardware acceleration wherever it's available — QNN, CUDA, OpenVINO, DirectML, or CoreML, picked automatically (see [The On-Device Pipeline](#the-on-device-pipeline)). This appendix is additional, optional proof that the same models were also compiled and profiled on **real Snapdragon X Elite hardware** through Qualcomm AI Hub, for anyone who wants the specific numbers:
 
 | Model | Inference time | Compute unit |
 |---|---|---|

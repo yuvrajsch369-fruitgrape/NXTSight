@@ -8,16 +8,25 @@ accelerator it reports, in this priority order:
 
     1. QNN       — Snapdragon Hexagon NPU (what this app is built for)
     2. CUDA       — NVIDIA GPU
-    3. DirectML   — any GPU on Windows (AMD/Intel/NVIDIA, via DirectX 12)
-    4. CoreML     — Apple Neural Engine / GPU on macOS
-    5. CPU        — always available, the universal fallback
+    3. OpenVINO   — Intel NPU / integrated GPU (Core Ultra and newer)
+    4. DirectML   — any GPU on Windows (AMD/Intel/NVIDIA, via DirectX 12)
+    5. CoreML     — Apple Neural Engine / GPU on macOS
+    6. CPU        — always available, the universal fallback
 
-Every one of those five is a first-class execution provider ONNX
-Runtime itself ships and maintains (QNN and DirectML from Microsoft/
-Qualcomm, CUDA from Microsoft against NVIDIA's stack, CoreML from
-Microsoft against Apple's) — this module doesn't talk to any vendor
-SDK directly, it just asks ONNX Runtime which of its own providers
-loaded successfully and prefers the fastest one that did.
+OpenVINO sits above DirectML, not below it, for the same reason QNN
+sits above everything: it's a vendor-specific compiler targeting that
+vendor's actual NPU silicon, not a generic graphics API a model happens
+to also run through. That's a judgment call, not a measured fact — this
+project has no Intel-NPU hardware to benchmark either path against the
+other on.
+
+Every one of those six is a first-class execution provider ONNX Runtime
+itself ships and maintains (QNN and DirectML from Microsoft/Qualcomm,
+CUDA from Microsoft against NVIDIA's stack, OpenVINO from Microsoft
+against Intel's stack, CoreML from Microsoft against Apple's) — this
+module doesn't talk to any vendor SDK directly, it just asks ONNX
+Runtime which of its own providers loaded successfully and prefers the
+fastest one that did.
 
 The check happens once, at session-creation time, and is logged in
 plain language so it's obvious during a demo which path is actually
@@ -25,10 +34,21 @@ running — no manual flag to flip, no crash if a given provider isn't
 there. Genuinely verified on this dev machine: only CoreML and CPU are
 installed here (`onnxruntime`'s macOS wheel ships both), so those two
 paths are exercised for real every time this file's tests run; QNN,
-CUDA, and DirectML are exercised with the real selection *logic*
-(tests/test_runtime.py mocks `get_available_providers()` to simulate
-each), not on real hardware — this codebase doesn't have a Snapdragon,
-NVIDIA, or Windows-GPU machine to test on directly.
+CUDA, OpenVINO, and DirectML are exercised with the real selection
+*logic* (tests/test_runtime.py mocks `get_available_providers()` to
+simulate each), not on real hardware — this codebase doesn't have a
+Snapdragon, NVIDIA, Intel-NPU, or Windows-GPU machine to test on
+directly. OpenVINO carries one more honest asterisk than the others:
+`onnxruntime-openvino` (the package that actually provides this EP)
+publishes no macOS wheels at all, for any version — confirmed directly
+against every release on PyPI, not assumed — so this exact code path
+can never be installed on this dev machine, mocked or not; only the
+*decision logic* (does runtime.py pick OpenVINO when it's reported
+available) is testable here. Separately, this project's own models were
+verified to convert cleanly to OpenVINO's native IR format and produce
+numerically identical output — see scripts/export_openvino_ir.py and
+the README's hardware-testing table for that evidence, which is real
+but doesn't run through this file's code path at all.
 """
 
 import logging
@@ -45,6 +65,7 @@ logger.setLevel(logging.INFO)
 
 QNN_PROVIDER = "QNNExecutionProvider"
 CUDA_PROVIDER = "CUDAExecutionProvider"
+OPENVINO_PROVIDER = "OpenVINOExecutionProvider"
 DIRECTML_PROVIDER = "DmlExecutionProvider"
 COREML_PROVIDER = "CoreMLExecutionProvider"
 CPU_PROVIDER = "CPUExecutionProvider"
@@ -61,6 +82,15 @@ _QNN_BACKEND_PATH = "QnnHtp.dll" if platform.system() == "Windows" else "libQnnH
 _PROVIDER_PRIORITY = (
     (QNN_PROVIDER, "Snapdragon NPU (ONNX Runtime QNN execution provider)", "npu", {"backend_path": _QNN_BACKEND_PATH}),
     (CUDA_PROVIDER, "NVIDIA GPU (ONNX Runtime CUDA execution provider)", "accel", {}),
+    # device_type "AUTO" is OpenVINO's own device-selection plugin — it
+    # tries NPU, then GPU, then CPU internally, rather than this code
+    # hardcoding "NPU" and risking a hard failure on the (currently far
+    # more common) Intel machine with an integrated GPU but no NPU
+    # silicon at all. Unverified on real hardware either way — this dev
+    # machine has no Intel NPU/GPU-plugin hardware, and `onnxruntime-
+    # openvino` has no macOS wheels to even install and check locally
+    # (see this file's module docstring).
+    (OPENVINO_PROVIDER, "Intel NPU / GPU (ONNX Runtime OpenVINO execution provider)", "accel", {"device_type": "AUTO"}),
     (DIRECTML_PROVIDER, "Windows GPU (ONNX Runtime DirectML execution provider)", "accel", {}),
     (COREML_PROVIDER, "Apple Neural Engine / GPU (ONNX Runtime CoreML execution provider)", "accel", {}),
 )

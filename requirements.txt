@@ -1,9 +1,9 @@
 # NXTSight — on-device pipeline dependencies
 # Target runtime: whatever real accelerator ONNX Runtime finds on this
-# machine — Snapdragon NPU (QNN), NVIDIA GPU (CUDA), Windows GPU (DirectML),
-# or Apple Neural Engine/GPU (CoreML) — CPU always as the universal
-# fallback. See src/pipeline/runtime.py for the priority order and honest
-# per-vendor testing notes.
+# machine — Snapdragon NPU (QNN), NVIDIA GPU (CUDA), Intel NPU/GPU
+# (OpenVINO), Windows GPU (DirectML), or Apple Neural Engine/GPU (CoreML) —
+# CPU always as the universal fallback. See src/pipeline/runtime.py for the
+# priority order and honest per-vendor testing notes.
 #
 # Every version below is pinned exactly (captured from a real working
 # install, not guessed) so that `pip install -r requirements.txt` gives
@@ -43,6 +43,28 @@
 onnx==1.19.1  # newer onnx defaults to an IR version this onnxruntime can't load
 onnxruntime==1.19.2; sys_platform != "win32"
 onnxruntime-qnn==1.20.0; sys_platform == "win32"
+
+# Intel NPU / integrated GPU (Core Ultra and newer), via ONNX Runtime's
+# OpenVINO execution provider. Deliberately NOT in the base install above,
+# for a real reason, not laziness: onnxruntime-openvino publishes NO macOS
+# wheels at all, for any version — confirmed directly against every release
+# on PyPI (1.20.0 through 1.24.1), not assumed. It only ships
+# manylinux_2_28_x86_64 and win_amd64 wheels, so this line would hard-fail
+# `pip install` on every Mac, Intel or Apple Silicon. Install it yourself,
+# only on Windows or Linux with an Intel Core Ultra chip:
+#     pip install onnxruntime-openvino==1.24.1
+# src/pipeline/runtime.py detects it automatically once installed, no code
+# change needed — same "ask ONNX Runtime what it has, don't assume"
+# pattern as every other accelerator in that file.
+#
+# Separate from the line above: `openvino` itself (model conversion +
+# scripts/export_openvino_ir.py, which produced models/openvino_ir/ and
+# proved all 7 of this project's models convert cleanly with zero
+# unsupported-operator issues — see README's hardware-testing table) DOES
+# have an Intel-Mac wheel, but only through 2025.4.1 — 2026.4.0 dropped
+# Intel-Mac support entirely (same story as torch==2.2.2 above). Optional,
+# only needed to run that one export script yourself:
+#     pip install openvino==2025.4.1
 
 # Core numerical / data handling.
 # numpy pinned below 2.0: easyocr's torch build (2.2.2, the last version

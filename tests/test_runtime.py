@@ -60,7 +60,14 @@ def test_qnn_wins_over_every_other_accelerator(monkeypatch):
     monkeypatch.setattr(
         runtime.ort,
         "get_available_providers",
-        lambda: ["QNNExecutionProvider", "CUDAExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
+        lambda: [
+            "QNNExecutionProvider",
+            "CUDAExecutionProvider",
+            "OpenVINOExecutionProvider",
+            "DmlExecutionProvider",
+            "CoreMLExecutionProvider",
+            "CPUExecutionProvider",
+        ],
     )
     providers, description = select_execution_providers()
     assert description.startswith("Snapdragon NPU")
@@ -72,14 +79,26 @@ def test_cuda_wins_when_qnn_absent(monkeypatch):
     monkeypatch.setattr(
         runtime.ort,
         "get_available_providers",
-        lambda: ["CUDAExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
+        lambda: ["CUDAExecutionProvider", "OpenVINOExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
     )
     providers, description = select_execution_providers()
     assert description.startswith("NVIDIA GPU")
     assert providers[0][0] == "CUDAExecutionProvider"
 
 
-def test_directml_wins_when_qnn_and_cuda_absent(monkeypatch):
+def test_openvino_wins_when_qnn_and_cuda_absent(monkeypatch):
+    monkeypatch.setattr(
+        runtime.ort,
+        "get_available_providers",
+        lambda: ["OpenVINOExecutionProvider", "DmlExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
+    )
+    providers, description = select_execution_providers()
+    assert description.startswith("Intel NPU / GPU")
+    assert providers[0][0] == "OpenVINOExecutionProvider"
+    assert providers[0][1] == {"device_type": "AUTO"}
+
+
+def test_directml_wins_when_qnn_cuda_and_openvino_absent(monkeypatch):
     monkeypatch.setattr(
         runtime.ort,
         "get_available_providers",
@@ -111,6 +130,7 @@ def test_cpu_only_fallback_when_no_accelerator_present(monkeypatch):
 def test_badge_variant_classification():
     assert badge_variant_for("Snapdragon NPU (ONNX Runtime QNN execution provider)") == "npu"
     assert badge_variant_for("NVIDIA GPU (ONNX Runtime CUDA execution provider)") == "accel"
+    assert badge_variant_for("Intel NPU / GPU (ONNX Runtime OpenVINO execution provider)") == "accel"
     assert badge_variant_for("Windows GPU (ONNX Runtime DirectML execution provider)") == "accel"
     assert badge_variant_for("Apple Neural Engine / GPU (ONNX Runtime CoreML execution provider)") == "accel"
     assert badge_variant_for("CPU (no hardware accelerator available on this machine)") == "cpu"
@@ -170,6 +190,21 @@ def test_create_inference_session_executes_with_cuda_selected(monkeypatch, tmp_p
     result = session.run(["Y"], {"X": np.array([41.0], dtype=np.float32)})
     assert result[0][0] == 42.0
     assert session.get_providers()[0] == "CPUExecutionProvider"  # no real NVIDIA GPU on this machine
+
+
+def test_create_inference_session_executes_with_openvino_selected(monkeypatch, tmp_path):
+    session, description = _create_session_with_mocked_hardware(
+        monkeypatch, tmp_path, ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+    )
+    assert description.startswith("Intel NPU / GPU")
+    result = session.run(["Y"], {"X": np.array([41.0], dtype=np.float32)})
+    assert result[0][0] == 42.0
+    # Confirmed directly: passing provider_options ({"device_type": "AUTO"})
+    # for a provider name onnxruntime doesn't have compiled in behaves the
+    # same graceful way as a bare provider name does — a UserWarning, a
+    # fallback to CPU, not an exception. No real Intel NPU/GPU on this
+    # machine either way.
+    assert session.get_providers()[0] == "CPUExecutionProvider"
 
 
 def test_create_inference_session_executes_with_directml_selected(monkeypatch, tmp_path):
@@ -237,6 +272,7 @@ def test_real_scam_classifier_onnx_runs_under_every_mocked_hardware_scenario(mon
     scenarios = {
         "qnn": ["QNNExecutionProvider", "CPUExecutionProvider"],
         "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        "openvino": ["OpenVINOExecutionProvider", "CPUExecutionProvider"],
         "directml": ["DmlExecutionProvider", "CPUExecutionProvider"],
         "cpu_only": ["CPUExecutionProvider"],
     }
@@ -258,5 +294,6 @@ def test_real_scam_classifier_onnx_runs_under_every_mocked_hardware_scenario(mon
     assert len(label_ids) == 1, f"inconsistent verdicts across hardware scenarios: {results}"
     assert results["qnn"][1].startswith("Snapdragon NPU")
     assert results["cuda"][1].startswith("NVIDIA GPU")
+    assert results["openvino"][1].startswith("Intel NPU / GPU")
     assert results["directml"][1].startswith("Windows GPU")
     assert results["cpu_only"][1] == "CPU (no hardware accelerator available on this machine)"
