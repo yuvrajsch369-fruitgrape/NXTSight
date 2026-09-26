@@ -1,25 +1,33 @@
 """Hindi-English code-mixed ("Hinglish") text — what real Indian scam and
-transaction messages actually look like, not just clean English. Added
-after measuring real, sometimes-uncomfortable results directly (see
-PROJECT_DESCRIPTION.md / README's hardening notes): a large fraction of
-realistic Hinglish text never reaches either classifier at all, rejected
-by src/pipeline/text_guard.py's `langdetect`-based English-only gate —
-and that gate is non-deterministic (no fixed seed), so the *same* message
-can be accepted on one call and rejected on the next.
+transaction messages actually look like, not just clean English.
 
-These tests are split into three honest groups:
+Two problems were found here, in order:
 
-1. Messages that were empirically stable (rejected 0/8 times across 8
-   repeated trials during measurement) — parametrized as regular
-   assertions, since a regression here is a real regression.
-2. `test_text_guard_rejects_most_hinglish_messages_nondeterministically` —
-   documents the rejection-rate finding directly, as a measured range
-   rather than a single flaky assertion.
-3. `test_known_false_positive_hinglish_refund_message` — an `xfail`
-   documenting a confirmed, confidently-wrong classification (not an
-   ambiguous one the LLM tier would catch) on a legit Hinglish refund
-   message. This should start passing (and the xfail should be removed)
-   the day this is actually fixed, not silently forgotten.
+1. `src/pipeline/text_guard.py`'s `langdetect`-based English-only gate
+   rejected 46-72% of realistic Hinglish text — most often misidentifying
+   it as Indonesian, Estonian, or Turkish — and did so non-deterministically
+   (langdetect ships with no fixed random seed). FIXED: see
+   `text_guard.py`'s module docstring and `_looks_like_hindi_english_
+   code_mixed()`. Verified directly: across the full 30-message corpus
+   below, the gate now accepts every one of them, every time (5 repeated
+   trials each — 0 rejections, fully deterministic). See
+   `test_text_guard_accepts_realistic_hinglish_deterministically` below.
+
+2. Fixing the gate exposed a second, separate, still-open problem: once
+   Hinglish text reliably reaches the classifiers, the classifiers
+   themselves are meaningfully less accurate on it than on English. 3 of
+   10 realistic legit Hinglish messages are confidently classified as
+   scam — not ambiguous ~0.5 calls the LLM escalation tier would catch
+   (see `engine.py`'s margin-based escalation) — including, tellingly, a
+   genuine OTP message whose own text actively warns against sharing the
+   OTP. One legit Hinglish transaction is also confidently miscategorized
+   by the spend classifier. This is a model/training-data gap (both
+   classifiers were trained on English-only examples — see
+   `src/scam_detector/data.py`, `src/spend_categorizer/data.py`), not a
+   gating problem, and needs a different fix (more Hinglish training
+   data, or a lower escalation margin) than the one applied here. Tracked
+   as deliberate `xfail`s below so these stay visible, not silently
+   re-masked now that the gate no longer hides them.
 """
 
 import pytest
@@ -28,129 +36,106 @@ from src.pipeline.text_guard import unanalyzable_reason
 from src.scam_detector.classifier import classify_scam
 from src.spend_categorizer.categorizer import categorize_transactions
 
-# Only messages that passed src/pipeline/text_guard.py's langdetect gate on
-# every one of 8 repeated trials during measurement — deterministic enough
-# to assert on directly. (Plenty of other realistic Hinglish phrasings did
-# NOT clear this bar — see the rejection-rate test below.)
-SCAM_HINGLISH_STABLE = [
+# All 10 are accepted by text_guard deterministically and correctly
+# classified is_scam=True.
+SCAM_HINGLISH = [
+    "Aapka SBI account 24 ghante mein block ho jayega. Turant apna KYC verify karein is link par: bit.ly/sbi-kyc-verify",
+    "Congratulations! Aapne Rs 25,000 ka lottery jeeta hai. Apna prize claim karne ke liye yahan click karein aur apni bank details bhejein.",
     "URGENT: Aapke Aadhaar card se ek fraud case register hua hai. Turant is number par call karein warna warrant issue ho jayega.",
+    "Aapka parcel customs mein atka hai. Rs 149 ka duty pay karein is link se warna parcel return ho jayega: http://parcel-fee.net",
     "Yeh HDFC Bank se hai. Aapke account mein suspicious activity dekhi gayi hai. Apna OTP share karein verification ke liye.",
     "Aapko ek work from home job offer mili hai, Rs 40,000 per week. Sirf Rs 999 registration fee bhejein activate karne ke liye.",
+    "Aapka SIM card 2 ghante mein band ho jayega KYC mismatch ke wajah se. Jo OTP aaya hai wo forward kar dein turant.",
+    "Income Tax Department: Aapko Rs 12,500 ka refund milega. Link par click karke apni bank details 24 ghante ke andar daalein.",
+    "Sir maine aapka parcel deliver karne ki koshish ki lekin address nahi mila, Rs 99 verification fee pay karein yahan click karke.",
     "Your Aadhaar-linked account mein Rs 49,000 ka suspicious transaction hua hai. Turant is toll-free number par call back karein.",
 ]
 
-LEGIT_HINGLISH_STABLE = [
+# Legit Hinglish messages the classifier gets right (is_scam=False).
+LEGIT_HINGLISH_CORRECT = [
+    "Aapke SBI a/c se Rs 500 debit hua hai Swiggy Bangalore par 12-Sep ko. Balance: Rs 4,200.",
+    "Aapka Amazon order #402-1928 ship ho gaya hai, Thursday tak pahunch jayega. App mein track karein.",
+    "Kal 1 baje lunch pe milte hain? Agar reschedule karna ho toh batao.",
     "Class 5B ka parent-teacher meeting Friday 4 baje school auditorium mein hai.",
+    "Aapka gym membership agle mahine ki 1 tarikh ko automatically renew hoga, same rate par.",
+    "Dr. Mehta ke saath aapka dental appointment kal 11:30 AM confirm hai.",
+    "Aapka Blue Dart shipment AWB 88213456 out for delivery hai, aaj shaam 6 baje tak pahunch jayega.",
 ]
 
-# Hinglish variants of SAMPLE_BATCH-style transactions (tests/test_categorizer.py).
-# Unlike SCAM_HINGLISH_STABLE/LEGIT_HINGLISH_STABLE above, neither of these
-# passed text_guard on all 8 measurement trials (1/8 and 2/8 rejected,
-# respectively) — the categorizer got every trial that DID pass correct,
-# but "passed every single time" wasn't true for any spend example tested,
-# unlike several scam ones. test_categorizes_stable_hinglish_transactions
-# below retries a few times to test the categorizer's own judgment rather
-# than getting incidentally skipped by the separately-documented text_guard
-# flakiness (see test_text_guard_rejects_most_hinglish_messages_nondeterministically).
-SPEND_HINGLISH_STABLE = [
+# Legit Hinglish messages the classifier gets confidently WRONG — not
+# ambiguous calls the LLM escalation tier would catch. Known, open issue;
+# see this file's module docstring.
+LEGIT_HINGLISH_FALSE_POSITIVES = [
+    "Aapka bijli bill Rs 1,240 ka 28 tarikh ko due hai. MyUtility app se pay karein late fee avoid karne ke liye.",
+    "Aapka OTP login ke liye 738291 hai. 5 minute ke liye valid hai. Kisi ke saath share mat karein, bank staff ke saath bhi nahi.",
+    "Rs 2,340 ka refund aapke cancelled order ke liye initiate ho gaya hai, 3-5 business days mein reflect hoga.",
+]
+
+ALL_HINGLISH_FOR_GATE_CHECK = SCAM_HINGLISH + LEGIT_HINGLISH_CORRECT + LEGIT_HINGLISH_FALSE_POSITIVES
+
+# (text, expected_category) — spend-categorizer got these right.
+SPEND_HINGLISH_CORRECT = [
     ("Aapke account se Rs 380 kat gaye Swiggy se Behrouz Biryani order karne par.", "Food & Dining"),
+    ("Rs 1,450 ka bijli bill Adani Electricity ko successfully pay kar diya gaya hai aapke account se.", "Bills & Utilities"),
+    ("Aapne Ola cab book ki, Rs 210 UPI se debit hua.", "Transport"),
+    ("Rs 3,000 Kiran Mehta ko UPI se bhej diye gaye hain.", "Transfers & UPI P2P"),
+    ("Rs 6,000 SIP mutual fund Kuvera mein invest kiya gaya hai aapke account se.", "Investment & Savings"),
+    ("ATM se Rs 3,000 nikale gaye Bank of Baroda ATM par.", "Cash Withdrawal"),
+    ("Rs 750 Apollo Clinic consultation ke liye pay kiya gaya.", "Healthcare"),
     ("Rs 899 Sony Liv subscription ke liye UPI se kat gaye.", "Entertainment"),
+    ("Rs 2,999 Flipkart par shopping ke liye UPI se pay kiya.", "Shopping"),
+]
+
+# (text, expected_category) — confidently miscategorized (as "Transfers &
+# UPI P2P"). Known, open issue; see this file's module docstring.
+SPEND_HINGLISH_FALSE_CATEGORY = [
+    ("Aapki salary Rs 55,000 BrightWave Software se account mein credit ho gayi hai.", "Income & Refunds"),
 ]
 
 
-@pytest.mark.parametrize("text", SCAM_HINGLISH_STABLE)
-def test_flags_stable_hinglish_scam_examples(text):
+def test_text_guard_accepts_realistic_hinglish_deterministically():
+    """The fix: every one of the 30 realistic Hinglish messages used across
+    this file must clear text_guard, every time, with nothing flaky about
+    it — this is what "fixed" concretely means, checked directly against
+    the gate itself rather than inferred from classifier behavior."""
+    failures = []
+    for text in ALL_HINGLISH_FOR_GATE_CHECK:
+        for _ in range(5):
+            reason = unanalyzable_reason(text)
+            if reason is not None:
+                failures.append((text, reason))
+    assert not failures, f"text_guard rejected {len(failures)} Hinglish call(s) that should now pass: {failures[:3]}"
+
+
+@pytest.mark.parametrize("text", SCAM_HINGLISH)
+def test_flags_hinglish_scam_examples(text):
     result = classify_scam(text)
     assert result["is_scam"] is True
     assert 0.0 <= result["confidence"] <= 1.0
 
 
-@pytest.mark.parametrize("text", LEGIT_HINGLISH_STABLE)
-def test_clears_stable_hinglish_legit_examples(text):
+@pytest.mark.parametrize("text", LEGIT_HINGLISH_CORRECT)
+def test_clears_correct_hinglish_legit_examples(text):
     result = classify_scam(text)
     assert result["is_scam"] is False
     assert 0.0 <= result["confidence"] <= 1.0
 
 
-@pytest.mark.parametrize("text,expected_category", SPEND_HINGLISH_STABLE)
-def test_categorizes_stable_hinglish_transactions(text, expected_category):
-    # Retries a few times: text_guard rejects this specific text roughly
-    # 1-in-4 to 1-in-8 calls (measured), and that flakiness is already its
-    # own documented finding below — this test exists to check the
-    # categorizer's judgment once the text actually reaches it, not to
-    # re-prove the gate is flaky.
-    for attempt in range(5):
-        item = categorize_transactions([text])["categorized"][0]
-        # text_guard rejection shows up as Unrecognized + confidence 0.0 +
-        # no extracted amount — a low-confidence-but-reached-the-model
-        # Unrecognized result would have a non-None amount instead.
-        text_guard_rejected = item["category"] == "Unrecognized" and item["amount"] is None and item["confidence"] == 0.0
-        if not text_guard_rejected:
-            break
-    else:
-        pytest.skip("text_guard rejected this Hinglish text on every retry — see the rejection-rate test below")
+@pytest.mark.xfail(reason="Known, open classifier-accuracy gap on Hinglish legit text — see module docstring.", strict=True)
+@pytest.mark.parametrize("text", LEGIT_HINGLISH_FALSE_POSITIVES)
+def test_known_hinglish_legit_false_positives(text):
+    result = classify_scam(text)
+    assert result["is_scam"] is False
+
+
+@pytest.mark.parametrize("text,expected_category", SPEND_HINGLISH_CORRECT)
+def test_categorizes_hinglish_transactions_correctly(text, expected_category):
+    item = categorize_transactions([text])["categorized"][0]
     assert item["category"] == expected_category
 
 
-def test_text_guard_rejects_most_hinglish_messages_nondeterministically():
-    """Measured directly (not assumed): across 8 repeated calls on 10
-    realistic Hinglish scam messages and 10 realistic Hinglish legit/
-    transaction messages, text_guard's langdetect-based gate rejected
-    46% of scam calls and 72% of legit calls as "not English" — most
-    often misidentifying the code-mixed text as Indonesian ('id'),
-    Estonian, or Turkish (short-text n-gram collisions with romanized
-    Hindi), and inconsistently: the identical string can pass on one
-    call and get rejected on the next, since langdetect ships with no
-    fixed random seed (confirmed: the same string produces different
-    confidence distributions across repeated calls with nothing else
-    changed). This test locks in that this is a known, measured
-    limitation — not a silent one — by asserting the rejection rate
-    stays roughly in the range actually observed, so a change that
-    makes it dramatically worse is caught, without asserting an exact
-    single-call outcome that would make this test itself flaky.
-    """
-    hinglish_samples = SCAM_HINGLISH_STABLE + [
-        "Aapka SBI account 24 ghante mein block ho jayega. Turant apna KYC verify karein is link par: bit.ly/sbi-kyc-verify",
-        "Aapka parcel customs mein atka hai. Rs 149 ka duty pay karein is link se warna parcel return ho jayega: http://parcel-fee.net",
-        "Aapke SBI a/c se Rs 500 debit hua hai Swiggy Bangalore par 12-Sep ko. Balance: Rs 4,200.",
-        "Kal 1 baje lunch pe milte hain? Agar reschedule karna ho toh batao.",
-        "Dr. Mehta ke saath aapka dental appointment kal 11:30 AM confirm hai.",
-    ]
-    trials = 6
-    rejected = sum(
-        1 for _ in range(trials) for text in hinglish_samples if unanalyzable_reason(text) is not None
-    )
-    total = trials * len(hinglish_samples)
-    rejection_rate = rejected / total
-    # Observed range during measurement was roughly 30-80% depending on the
-    # exact sample set; this is a wide, deliberately loose band that only
-    # fails if the gate becomes either suspiciously lenient (a real-language
-    # check that never rejects anything isn't checking anything) or even
-    # worse than what was already measured as a real problem.
-    assert 0.2 <= rejection_rate <= 0.95, (
-        f"Hinglish rejection rate {rejection_rate:.0%} is outside the previously-measured "
-        "range — re-investigate rather than assuming this is still the same known gap."
-    )
-
-
-@pytest.mark.xfail(
-    reason=(
-        "Confirmed, repeatable false positive: this legit Hinglish refund message is "
-        "classified as scam with 0.934 confidence (not an ambiguous ~0.5 call the LLM "
-        "escalation tier would catch — see engine.py's margin-based escalation, which "
-        "never fires here because the fast classifier is confidently wrong, not unsure). "
-        "The equivalent English phrasing ('A refund of Rs 2,340 has been initiated...') "
-        "is a known *ambiguous* case that correctly escalates (see "
-        "tests/test_network_guard.py) — the Hinglish phrasing shifts the same semantic "
-        "message from 'appropriately uncertain' to 'confidently wrong' for the fast "
-        "MiniLM+head classifier. Left failing on purpose so this is caught and fixed "
-        "deliberately (more Hinglish training data, or a lower escalation margin), not "
-        "silently forgotten."
-    ),
-    strict=True,
-)
-def test_known_false_positive_hinglish_refund_message():
-    result = classify_scam(
-        "Rs 2,340 ka refund aapke cancelled order ke liye initiate ho gaya hai, 3-5 business days mein reflect hoga."
-    )
-    assert result["is_scam"] is False
+@pytest.mark.xfail(reason="Known, open categorizer-accuracy gap on Hinglish (salary credit read as a P2P transfer) — see module docstring.", strict=True)
+@pytest.mark.parametrize("text,expected_category", SPEND_HINGLISH_FALSE_CATEGORY)
+def test_known_hinglish_spend_miscategorization(text, expected_category):
+    item = categorize_transactions([text])["categorized"][0]
+    assert item["category"] == expected_category
