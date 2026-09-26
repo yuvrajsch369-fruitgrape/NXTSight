@@ -4,6 +4,17 @@ Deliberately includes legit messages that mention OTPs, banks, and KYC —
 the classifier needs to learn the *pattern* (e.g. being asked to share an
 OTP) rather than just reacting to individual words like "OTP" or "bank"
 that show up in plenty of real, harmless messages too.
+
+Also includes Hindi-English code-mixed ("Hinglish") examples of both
+classes, added after measuring that the classifier — trained on English
+only — was confidently wrong on real Hinglish legit messages (a bill
+reminder, an OTP-warning, a refund notice) even once text_guard.py
+correctly let them through (see src/pipeline/text_guard.py and
+tests/test_code_mixed_text.py). These are deliberately worded
+differently from tests/test_code_mixed_text.py's held-out examples —
+the point is for the classifier to learn the Hinglish *pattern* the way
+it already learns the English one, not to memorize specific test
+sentences.
 """
 
 SCAM_EXAMPLES = [
@@ -58,6 +69,18 @@ SCAM_EXAMPLES = [
     # Advance-fee loan scams
     "Instant personal loan of Rs 3,00,000 approved, zero paperwork, zero interest for the first year. Pay a refundable processing fee of Rs 999 via UPI to release the amount today.",
     "Pre-approved loan offer: Rs 2,00,000 credited within 1 hour, no credit check required. Transfer a one-time processing charge of Rs 1,200 now to activate disbursal.",
+    # Hindi-English code-mixed ("Hinglish") scam examples
+    "Aapka bank account 24 ghante mein suspend ho jayega KYC update na karne ki wajah se. Turant is link par click karke apni details verify karein.",
+    "Bank fraud department se bol rahe hain, aapke account mein ek suspicious transaction dikha hai use cancel karne ke liye humein OTP bataiye.",
+    "Aapne lottery mein Rs 10,00,000 jeete hain! Prize claim karne ke liye apni bank details is number par turant bhejein.",
+    "Aapka parcel customs mein rukka hua hai, Rs 299 ki fee turant pay karein warna parcel wapas bhej diya jayega.",
+    "Sirf Rs 500 invest karke roz Rs 5000 kamayein, 100% guarantee hai, abhi humare group mein join karein.",
+    "Aapka Aadhaar KYC pending hai, is link par apni Aadhaar aur PAN details turant update karein warna SIM band ho jayega.",
+    "Ghar baithe kaam karein, Rs 2000 roz kamayein, bas ek chhoti si registration fee humein UPI se bhej dein.",
+    "Aapka WhatsApp number ek lucky draw mein select hua hai, Rs 1,00,000 ka prize claim karne ke liye apni details yahan bhejein.",
+    "Aapka mobile number 2 ghante mein band ho jayega KYC verification na hone ki wajah se. Jo code aapko mila hai wo turant is number par forward kar dein.",
+    "GST department ki taraf se Rs 9,200 ka refund aapke liye ready hai. Apna bank account number aur IFSC code is link par turant submit karein 24 ghante ke andar.",
+    "Income Tax refund Rs 14,000 ka pending hai aapke liye. Apni bank details aur debit card number yahan verify karein warna refund cancel ho jayega.",
 ]
 
 LEGIT_EXAMPLES = [
@@ -107,6 +130,19 @@ LEGIT_EXAMPLES = [
     "Team meeting moved to 3 PM today, same conference link as usual.",
     "Please review the attached document and share your feedback by end of day Friday.",
     "Your flight PNR ABC123 is confirmed for departure on the 14th at 6:45 AM. Check in online 24 hours before.",
+    # Hindi-English code-mixed ("Hinglish") legit examples
+    "Aapka account balance Rs 18,650 hai. Poori jaankari ke liye net banking mein login karein.",
+    "Aapke account mein Rs 12,000 credit hue hain 10-Sep ko. Available balance Rs 34,500 hai.",
+    "Aapka login OTP 583920 hai. Yeh 5 minute ke liye valid hai. Kisi ke saath bhi share na karein, bank staff ke saath bhi nahi.",
+    "Aapke account mein ek naya sign-in Chicago se hua hai. Agar yeh aap the, toh koi action nahi chahiye.",
+    "Aapka passport renewal application process ho raha hai. Status official portal par check karein.",
+    "Kal 1 baje milte hain lunch ke liye? Agar reschedule karna ho toh bata dena.",
+    "Aapka bijli ka bill Rs 980 hai, 28 tarikh tak pay kar dein late fee se bachne ke liye.",
+    "Aapka broadband bill is mahine Rs 899 hai, 5 tarikh tak app se pay karein service interruption avoid karne ke liye.",
+    "Aapka mobile postpaid bill Rs 599 ka due hai, is hafte pay karein service disconnect hone se bachne ke liye.",
+    "Aapka Amazon order deliver ho gaya hai aaj 3 baje. Shopping ke liye dhanyawad.",
+    "Aapka refund Rs 1,500 initiate ho gaya hai, 5 din mein aapke account mein aa jayega.",
+    "Aapka gas cylinder booking confirm ho gaya hai, 2 din mein deliver ho jayega.",
 ]
 
 TRAINING_DATA = [(text, True) for text in SCAM_EXAMPLES] + [

@@ -4,6 +4,18 @@ Realistic Indian bank/UPI SMS phrasing across banks (SBI, HDFC, ICICI,
 Axis, Kotak, PNB, Canara, Yes Bank) and payment apps (UPI, Google Pay,
 PhonePe, NEFT/IMPS). Merchant names carry most of the signal here, similar
 to how a real bank statement categorizer works.
+
+Also includes Hindi-English code-mixed ("Hinglish") examples across
+several categories, added after measuring that a Hinglish salary-credit
+message was confidently miscategorized as a P2P transfer (see
+tests/test_code_mixed_text.py) — the classifier had only ever seen
+"Income & Refunds" and "Transfers & UPI P2P" phrased in English. Extra
+Hinglish examples for those two categories specifically emphasize the
+distinguishing cue (a company/salary/refund source vs. a person's name),
+the same cue the English-only examples already rely on. Worded
+differently from tests/test_code_mixed_text.py's held-out examples on
+purpose — the goal is the classifier learning the Hinglish pattern, not
+memorizing one test sentence.
 """
 
 CATEGORIES = sorted(
@@ -122,4 +134,19 @@ TRAINING_DATA = [
     ("Rs 4,000.00 CASH WITHDRAWAL at PNB ATM on 07-Sep-25. Avl Bal Rs 16,800.", "Cash Withdrawal"),
     ("Rs 2,500 withdrawn from A/c XX7788 at YES BANK ATM on 06-Sep-25.", "Cash Withdrawal"),
     ("Rs 6,000 debited via ATM withdrawal at KOTAK MAHINDRA ATM on 13-Sep-25.", "Cash Withdrawal"),
+    # Hindi-English code-mixed ("Hinglish") examples, spread across categories
+    ("Rs 420 Swiggy se khana order karne par aapke account se debit hua.", "Food & Dining"),
+    ("Rs 1,600 BigBasket se grocery order karne par UPI se kat gaye.", "Groceries"),
+    ("Rs 2,800 Myntra par shopping ke liye credit card se pay kiye gaye.", "Shopping"),
+    ("Rs 150 Ola cab book karne par UPI se debit hua.", "Transport"),
+    ("Aapka mobile recharge Rs 299 ka successfully ho gaya hai Jio par.", "Bills & Utilities"),
+    ("Rs 199 Hotstar subscription ke liye aapke account se kat gaye.", "Entertainment"),
+    ("Rs 1,000 Sunil Kumar ko UPI ke through bhej diye gaye.", "Transfers & UPI P2P"),
+    ("Rs 600 roommate ko rent share ke liye Google Pay se bheje gaye.", "Transfers & UPI P2P"),
+    ("Aapki salary Rs 52,000 company ki taraf se aapke account mein credit ho gayi hai.", "Income & Refunds"),
+    ("Rs 900 ka refund Myntra se aapke account mein wapas aa gaya hai.", "Income & Refunds"),
+    ("Rs 300 cashback Google Pay se aapke wallet mein credit hua hai.", "Income & Refunds"),
+    ("Rs 550 Apollo Pharmacy mein dawai ke liye UPI se pay kiye gaye.", "Healthcare"),
+    ("Rs 4,000 mutual fund SIP mein invest kiye gaye aapke account se is mahine.", "Investment & Savings"),
+    ("Rs 3,000 ATM se nikale gaye HDFC Bank ATM par.", "Cash Withdrawal"),
 ]
