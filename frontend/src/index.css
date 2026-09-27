@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+/* NXTSight design tokens — ported 1:1 from assets/theme.css (the
+   Streamlit app's real source of truth; see ../../DESIGN_SYSTEM.md).
+   Dark-only by design, no light-mode variant, matching the rest of the
+   product. shadcn/21st.dev components read these var names directly, so
+   anything pasted in from 21st.dev inherits NXTSight's real palette
+   instead of shadcn's generic defaults. */
+:root {
+  --nxt-bg: #030304;
+  --nxt-bg-alt: #060607;
+  --nxt-panel: #0c0c0f;
+  --nxt-panel-hover: #131318;
+  --nxt-border: rgba(255, 255, 255, 0.08);
+  --nxt-border-strong: rgba(255, 255, 255, 0.18);
+  --nxt-text: #f1f3f9;
+  --nxt-text-muted: #8b93a7;
+  --nxt-violet: #7c5cff;
+  --nxt-cyan: #22d3ee;
+  --nxt-green: #22c55e;
+  --nxt-amber: #f59e0b;
+  --nxt-red: #ef4444;
+  --nxt-blue: #60a5fa;
+  --nxt-radius: 1rem;
+
+  --background: var(--nxt-bg);
+  --foreground: var(--nxt-text);
+  --card: var(--nxt-panel);
+  --card-foreground: var(--nxt-text);
+  --popover: var(--nxt-panel);
+  --popover-foreground: var(--nxt-text);
+  --primary: var(--nxt-violet);
+  --primary-foreground: #0a0e17;
+  --secondary: var(--nxt-cyan);
+  --secondary-foreground: #0a0e17;
+  --muted: var(--nxt-panel-hover);
+  --muted-foreground: var(--nxt-text-muted);
+  --accent: var(--nxt-panel-hover);
+  --accent-foreground: var(--nxt-text);
+  --destructive: var(--nxt-red);
+  --destructive-foreground: var(--nxt-text);
+  --border: var(--nxt-border);
+  --input: var(--nxt-border);
+  --ring: var(--nxt-violet);
+  --radius: var(--nxt-radius);
+}
+
+/* Tailwind v4: map the CSS variables above to `bg-background`,
+   `text-foreground`, `rounded-radius`-style utilities so components
+   from 21st.dev/shadcn work with zero per-component edits. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 0.5rem);
+  --radius-md: calc(var(--radius) - 0.25rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  color-scheme: dark;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}

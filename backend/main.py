@@ -61,6 +61,7 @@ if _missing:
     raise SystemExit(1)
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Requirement 5: install the network guard, and prove it actually works,
@@ -122,6 +123,21 @@ app = FastAPI(
         "requirement-by-requirement mapping and curl examples."
     ),
     version="1.0.0",
+)
+
+# The React dashboard (frontend/, a separate origin on localhost:5173 in
+# dev) calls this API directly from the browser -- without this, every
+# request would be blocked by the browser's own same-origin policy before
+# it ever reached a route below, regardless of anything server-side.
+# Scoped to Vite's default dev ports specifically, not a wildcard, since
+# this server also handles real user data (message text, transaction
+# SMS). Extend this list (or make it env-driven) when a production
+# frontend origin exists.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 # Requirement 4 (Payment Pause): a process-global, in-memory-only flag
